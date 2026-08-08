@@ -35,7 +35,7 @@ jobs:
       - name: Build & Publish Release (Electron Builder)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx --no-install electron-builder --win --publish always
+        run: npx --no-install electron-builder --win --publish onTagOrDraft
 
       - name: Upload Installer Artifact to GitHub Action Artifacts
         if: always()

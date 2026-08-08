@@ -1,7 +1,7 @@
 {
   "name": "overdesk-nexus",
   "private": true,
-  "version": "1.1.9",
+  "version": "1.2.0",
   "description": "Overdesk Nexus - All-in-one transparent desktop dashboard widget.",
   "author": "Overdesk",
   "repository": {
