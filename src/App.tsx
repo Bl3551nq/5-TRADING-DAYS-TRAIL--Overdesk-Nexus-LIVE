@@ -2887,42 +2887,6 @@ export default function App() {
                 Get your license key at: <a href="https://overdesk.store" target="_blank" rel="noreferrer">overdesk.store</a>
               </span>
             </div>
-
-            {/* Trial Simulator Bar on License Screen */}
-            <div style={{
-              marginTop: '10px',
-              paddingTop: '8px',
-              borderTop: '1px solid var(--divider)',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '4px',
-              width: '100%',
-              alignItems: 'center'
-            }}>
-              <span style={{ fontSize: '8.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-                Trial Simulator (Test Mode)
-              </span>
-              <div style={{ display: 'flex', gap: '4px' }}>
-                <button
-                  onClick={() => evaluateLicenseAndTrialStatus(1)}
-                  style={{ padding: '3px 7px', fontSize: '9px', fontWeight: '700', borderRadius: '6px', background: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)', color: isLight ? '#000' : '#fff', border: 'none', cursor: 'pointer' }}
-                >
-                  Day 1
-                </button>
-                <button
-                  onClick={() => evaluateLicenseAndTrialStatus(3)}
-                  style={{ padding: '3px 7px', fontSize: '9px', fontWeight: '700', borderRadius: '6px', background: '#ff9100', color: '#fff', border: 'none', cursor: 'pointer' }}
-                >
-                  Day 3 Sticker
-                </button>
-                <button
-                  onClick={() => evaluateLicenseAndTrialStatus(5)}
-                  style={{ padding: '3px 7px', fontSize: '9px', fontWeight: '700', borderRadius: '6px', background: 'var(--accent)', color: '#fff', border: 'none', cursor: 'pointer' }}
-                >
-                  Day 5
-                </button>
-              </div>
-            </div>
           </div>
         ) : (
           <>
@@ -3557,24 +3521,18 @@ export default function App() {
               onMouseDown={(e) => e.stopPropagation()}
               style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '6px 4px 16px', flex: 1, minHeight: 0 }}
             >
-              {/* License & Trial Status Section */}
-              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
-                    License & Trial Status
-                  </span>
-                  {!isTrial ? (
+              {/* License Status Section (Only shown when activated) */}
+              {!isTrial && (
+                <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                      License Status
+                    </span>
                     <span style={{ fontSize: '9.5px', fontWeight: '700', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.14)' : 'rgba(0,230,118,0.14)', padding: '2px 7px', borderRadius: '999px', border: activePlanType === 'annual' ? '1px solid rgba(56,189,248,0.35)' : '1px solid rgba(0,230,118,0.3)' }}>
                       {activePlanType === 'annual' ? '📅 ANNUAL PLAN' : '✓ LIFETIME UNLOCKED'}
                     </span>
-                  ) : (
-                    <span style={{ fontSize: '9.5px', fontWeight: '700', color: trialDayNumber >= 3 ? '#ff9100' : '#38bdf8', background: trialDayNumber >= 3 ? 'rgba(255,145,0,0.16)' : 'rgba(56,189,248,0.14)', padding: '2px 7px', borderRadius: '999px', border: trialDayNumber >= 3 ? '1px solid rgba(255,145,0,0.35)' : '1px solid rgba(56,189,248,0.3)' }}>
-                      DAY {trialDayNumber} OF 5 TRIAL
-                    </span>
-                  )}
-                </div>
+                  </div>
 
-                {!isTrial ? (
                   <div style={{ background: isLight ? (activePlanType === 'annual' ? 'rgba(56,189,248,0.06)' : 'rgba(0,230,118,0.06)') : (activePlanType === 'annual' ? 'rgba(56,189,248,0.08)' : 'rgba(0,230,118,0.08)'), borderRadius: '12px', padding: '10px 12px', border: '1px solid ' + (isLight ? (activePlanType === 'annual' ? 'rgba(56,189,248,0.25)' : 'rgba(0,230,118,0.2)') : (activePlanType === 'annual' ? 'rgba(56,189,248,0.3)' : 'rgba(0,230,118,0.25)')), display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.2)' : 'rgba(0,230,118,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', fontWeight: 'bold', fontSize: '13px' }}>
                       {activePlanType === 'annual' ? '📅' : '✓'}
@@ -3588,212 +3546,8 @@ export default function App() {
                       </span>
                     </div>
                   </div>
-                ) : (
-                  /* TRIAL ACTIVE DISPLAY */
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    {/* The 3rd Day Trial Sticker */}
-                    {trialDayNumber >= 3 ? (
-                      <div className="trial-sticker-card" style={{
-                        position: 'relative',
-                        background: 'linear-gradient(135deg, rgba(255, 145, 0, 0.18) 0%, rgba(220, 38, 38, 0.22) 100%)',
-                        border: '1.5px solid rgba(255, 145, 0, 0.5)',
-                        borderRadius: '14px',
-                        padding: '10px 12px',
-                        boxShadow: '0 4px 18px rgba(255, 145, 0, 0.2)',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '6px'
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '10px', fontWeight: '800', color: '#ffb74d', letterSpacing: '0.08em', textTransform: 'uppercase', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                            <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ff9100', boxShadow: '0 0 8px #ff9100', animation: 'pulse 1.5s infinite' }} />
-                            ⚡ TRIAL STICKER (DAY {trialDayNumber} OF 5)
-                          </span>
-                          <span style={{ fontSize: '10px', fontWeight: '700', color: '#ffffff', background: 'rgba(255, 145, 0, 0.4)', padding: '1px 6px', borderRadius: '6px' }}>
-                            {trialDaysLeft} {trialDaysLeft === 1 ? 'Day' : 'Days'} Left
-                          </span>
-                        </div>
-
-                        {/* Progress Bar */}
-                        <div style={{ width: '100%', height: '5px', background: 'rgba(0,0,0,0.3)', borderRadius: '99px', overflow: 'hidden' }}>
-                          <div style={{ width: `${(trialDayNumber / 5) * 100}%`, height: '100%', background: 'linear-gradient(90deg, #ff9100, #ff3d00)', borderRadius: '99px', transition: 'width 0.4s ease' }} />
-                        </div>
-
-                        <p style={{ fontSize: '10px', color: isLight ? '#1e293b' : '#f1f5f9', lineHeight: '1.35', margin: 0, fontWeight: '500' }}>
-                          Your 5-day trial is currently on <strong>Day {trialDayNumber}</strong>. Enter your Gumroad license key to remove this trial sticker and unlock lifetime access forever.
-                        </p>
-
-                        <button
-                          onClick={() => {
-                            setSettingsOpen(false);
-                            setLicenseActive(false);
-                          }}
-                          style={{
-                            width: '100%',
-                            padding: '7px 10px',
-                            borderRadius: '10px',
-                            background: 'linear-gradient(135deg, #0284c7, #2563eb)',
-                            border: 'none',
-                            color: '#ffffff',
-                            fontWeight: '700',
-                            fontSize: '11px',
-                            cursor: 'pointer',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            gap: '6px',
-                            boxShadow: '0 2px 10px rgba(2, 132, 199, 0.45)',
-                            marginTop: '2px'
-                          }}
-                        >
-                          🔑 Enter License Key to Unlock Lifetime
-                        </button>
-                      </div>
-                    ) : (
-                      /* Day 1 & 2 Info Card */
-                      <div style={{
-                        background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.05)',
-                        border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)'),
-                        borderRadius: '12px',
-                        padding: '10px 12px',
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '6px'
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <span style={{ fontSize: '10.5px', fontWeight: '700', color: isLight ? '#0f172a' : '#ffffff' }}>
-                            5-Day Free Trial (Day {trialDayNumber} of 5)
-                          </span>
-                          <span style={{ fontSize: '9.5px', color: 'var(--accent)', fontWeight: '700' }}>
-                            {trialDaysLeft} Days Remaining
-                          </span>
-                        </div>
-                        <span style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)', lineHeight: '1.3' }}>
-                          Full feature access enabled. The trial sticker badge will appear on Day 3.
-                        </span>
-                        <button
-                          onClick={() => {
-                            setSettingsOpen(false);
-                            setLicenseActive(false);
-                          }}
-                          style={{
-                            padding: '5px 8px',
-                            borderRadius: '8px',
-                            background: isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)',
-                            border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.15)'),
-                            color: isLight ? '#0f172a' : '#ffffff',
-                            fontWeight: '600',
-                            fontSize: '10px',
-                            cursor: 'pointer',
-                            marginTop: '2px'
-                          }}
-                        >
-                          Enter License Key Early
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Trial Simulator Controls */}
-                <div style={{
-                  background: isLight ? 'rgba(0,0,0,0.025)' : 'rgba(255,255,255,0.03)',
-                  borderRadius: '10px',
-                  padding: '6px 8px',
-                  border: '1px dashed ' + (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.15)'),
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '4px',
-                  marginTop: '2px'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: '8.5px', fontWeight: '800', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-                      🧪 Trial Simulator & Testing
-                    </span>
-                    <span style={{ fontSize: '8px', color: isLight ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.4)' }}>
-                      Test all trial states
-                    </span>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px' }}>
-                    <button
-                      onClick={() => {
-                        setSimulatedDayOverride(1);
-                        evaluateLicenseAndTrialStatus(1);
-                      }}
-                      style={{
-                        padding: '4px 2px',
-                        borderRadius: '6px',
-                        background: trialDayNumber === 1 && isTrial ? 'var(--accent)' : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)'),
-                        color: trialDayNumber === 1 && isTrial ? '#fff' : (isLight ? '#333' : '#ccc'),
-                        border: 'none',
-                        fontSize: '9px',
-                        fontWeight: '700',
-                        cursor: 'pointer'
-                      }}
-                      title="Simulate Day 1 of trial"
-                    >
-                      Day 1
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSimulatedDayOverride(3);
-                        evaluateLicenseAndTrialStatus(3);
-                      }}
-                      style={{
-                        padding: '4px 2px',
-                        borderRadius: '6px',
-                        background: trialDayNumber === 3 && isTrial ? '#ff9100' : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)'),
-                        color: trialDayNumber === 3 && isTrial ? '#fff' : (isLight ? '#333' : '#ccc'),
-                        border: 'none',
-                        fontSize: '9px',
-                        fontWeight: '700',
-                        cursor: 'pointer'
-                      }}
-                      title="Simulate Day 3 of trial (Sticker Appears)"
-                    >
-                      Day 3 Sticker
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSimulatedDayOverride(5);
-                        evaluateLicenseAndTrialStatus(5);
-                      }}
-                      style={{
-                        padding: '4px 2px',
-                        borderRadius: '6px',
-                        background: trialDayNumber === 5 && isTrial ? '#ff3d00' : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)'),
-                        color: trialDayNumber === 5 && isTrial ? '#fff' : (isLight ? '#333' : '#ccc'),
-                        border: 'none',
-                        fontSize: '9px',
-                        fontWeight: '700',
-                        cursor: 'pointer'
-                      }}
-                      title="Simulate Day 5 of trial (Last Day)"
-                    >
-                      Day 5
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSimulatedDayOverride(6);
-                        evaluateLicenseAndTrialStatus(6);
-                      }}
-                      style={{
-                        padding: '4px 2px',
-                        borderRadius: '6px',
-                        background: trialExpired ? '#dc2626' : (isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.06)'),
-                        color: trialExpired ? '#fff' : (isLight ? '#333' : '#ccc'),
-                        border: 'none',
-                        fontSize: '9px',
-                        fontWeight: '700',
-                        cursor: 'pointer'
-                      }}
-                      title="Simulate Day 6 (Expire trial and lock app)"
-                    >
-                      Lock App
-                    </button>
-                  </div>
                 </div>
-              </div>
+              )}
               <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>Window Scale</span>
                 <GooeyNav

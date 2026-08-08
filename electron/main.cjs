@@ -369,6 +369,8 @@ app.on('window-all-closed', () => {
 ═══════════════════════════════════════════════════════ */
 
 const SYS_TRIAL_FILE = path.join(os.homedir(), '.overdesk_nexus_sys.dat');
+const SYS_TRIAL_FILE_ALT = path.join(os.homedir(), '.overdesk_lock.sys');
+const SYS_TRIAL_FILE_APP = path.join(app.getPath('userData'), '.overdesk_sys_lock.dat');
 
 function getLocalIpAddress() {
   try {
@@ -390,30 +392,47 @@ function getLocalIpAddress() {
 function getSystemTrialRecord() {
   const machineId = getMachineId();
   const currentIp = getLocalIpAddress();
-  let trialRecord = null;
+  const records = [];
 
-  // 1. Check hidden system file in home directory (survives cache clears & uninstalls)
+  // Read all persistent location records
   try {
     if (fs.existsSync(SYS_TRIAL_FILE)) {
-      const content = fs.readFileSync(SYS_TRIAL_FILE, 'utf8');
-      const parsed = JSON.parse(content);
-      if (parsed && typeof parsed.trialStartDate === 'number') {
-        trialRecord = parsed;
-      }
+      records.push(JSON.parse(fs.readFileSync(SYS_TRIAL_FILE, 'utf8')));
     }
-  } catch (err) {
-    console.error('Error reading system trial file:', err);
-  }
+  } catch (err) {}
 
-  // 2. Check app-config.json
+  try {
+    if (fs.existsSync(SYS_TRIAL_FILE_ALT)) {
+      records.push(JSON.parse(fs.readFileSync(SYS_TRIAL_FILE_ALT, 'utf8')));
+    }
+  } catch (err) {}
+
+  try {
+    if (fs.existsSync(SYS_TRIAL_FILE_APP)) {
+      records.push(JSON.parse(fs.readFileSync(SYS_TRIAL_FILE_APP, 'utf8')));
+    }
+  } catch (err) {}
+
   const config = readConfig();
-  if (config.trialRecord && typeof config.trialRecord.trialStartDate === 'number') {
-    if (!trialRecord || config.trialRecord.trialStartDate < trialRecord.trialStartDate) {
-      trialRecord = config.trialRecord;
+  if (config.trialRecord) {
+    records.push(config.trialRecord);
+  }
+
+  let trialRecord = null;
+  let isPermanentlyExpired = false;
+  let earliestStart = Infinity;
+
+  for (const r of records) {
+    if (!r) continue;
+    if (r.trialExpired === true || r.permanentlyLocked === true) {
+      isPermanentlyExpired = true;
+    }
+    if (typeof r.trialStartDate === 'number' && r.trialStartDate < earliestStart) {
+      earliestStart = r.trialStartDate;
+      trialRecord = { ...r };
     }
   }
 
-  // 3. Create new persistent trial record if none exists anywhere
   if (!trialRecord) {
     trialRecord = {
       trialStartDate: Date.now(),
@@ -421,21 +440,27 @@ function getSystemTrialRecord() {
       firstIp: currentIp,
       created: new Date().toISOString()
     };
+  } else {
+    trialRecord.trialStartDate = earliestStart;
+  }
+
+  const now = Date.now();
+  const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+  if (isPermanentlyExpired || (now - trialRecord.trialStartDate >= FIVE_DAYS_MS)) {
+    trialRecord.trialExpired = true;
+    trialRecord.permanentlyLocked = true;
   }
 
   trialRecord.machineId = trialRecord.machineId || machineId;
   trialRecord.firstIp = trialRecord.firstIp || currentIp;
+  trialRecord.lastSeenTime = Math.max(trialRecord.lastSeenTime || 0, now);
 
-  // Sync back to both locations
-  try {
-    fs.writeFileSync(SYS_TRIAL_FILE, JSON.stringify(trialRecord, null, 2), 'utf8');
-  } catch (err) {
-    console.error('Error writing system trial file:', err);
-  }
-
-  if (!config.trialRecord || JSON.stringify(config.trialRecord) !== JSON.stringify(trialRecord)) {
-    writeConfig({ trialRecord });
-  }
+  // Sync to all locations
+  const payload = JSON.stringify(trialRecord, null, 2);
+  try { fs.writeFileSync(SYS_TRIAL_FILE, payload, 'utf8'); } catch (err) {}
+  try { fs.writeFileSync(SYS_TRIAL_FILE_ALT, payload, 'utf8'); } catch (err) {}
+  try { fs.writeFileSync(SYS_TRIAL_FILE_APP, payload, 'utf8'); } catch (err) {}
+  writeConfig({ trialRecord });
 
   return trialRecord;
 }
@@ -446,11 +471,28 @@ ipcMain.handle('check-license', (event, simDay) => {
   const encrypted = readEncryptedLicense();
   const sysTrial = getSystemTrialRecord();
 
-  const isActivated = config.licenseValid || (encrypted && encrypted.licenseKey) || sysTrial.licenseValid;
+  let isActivated = Boolean(config.licenseValid || (encrypted && encrypted.licenseKey) || sysTrial.licenseValid);
   const savedPlanType = config.planType || encrypted?.planType || sysTrial.planType || 'lifetime';
   const savedVariantName = config.variantName || encrypted?.variantName || sysTrial.variantName || (savedPlanType === 'annual' ? 'Annual Subscription' : 'Lifetime Access');
+  const activatedAt = config.activatedAt || encrypted?.activatedAt || sysTrial.activatedAt || 0;
 
-  // If key activated
+  // Enforce Trial Key Expiration (7 Days)
+  if (isActivated && savedPlanType === 'trial') {
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+    if (activatedAt > 0 && (Date.now() - activatedAt >= SEVEN_DAYS_MS)) {
+      isActivated = false; // Lock app back to license page after trial period ends
+    }
+  }
+
+  // Enforce 1-Year Expiration for Annual Subscription Plans
+  if (isActivated && savedPlanType === 'annual') {
+    const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+    if (activatedAt > 0 && (Date.now() - activatedAt >= ONE_YEAR_MS)) {
+      isActivated = false; // Lock app back to license page after 365 days
+    }
+  }
+
+  // If key activated and still valid
   if (isActivated) {
     return {
       ok: true,
@@ -473,7 +515,17 @@ ipcMain.handle('check-license', (event, simDay) => {
 
   const elapsedMs = Math.max(0, now - trial.trialStartDate);
   const elapsedDaysDecimal = elapsedMs / (1000 * 60 * 60 * 24);
-  const isExpired = elapsedDaysDecimal >= 5;
+  const isExpired = trial.trialExpired || trial.permanentlyLocked || elapsedDaysDecimal >= 5;
+
+  if (isExpired && (!trial.trialExpired || !trial.permanentlyLocked)) {
+    trial.trialExpired = true;
+    trial.permanentlyLocked = true;
+    const payload = JSON.stringify(trial, null, 2);
+    try { fs.writeFileSync(SYS_TRIAL_FILE, payload, 'utf8'); } catch (err) {}
+    try { fs.writeFileSync(SYS_TRIAL_FILE_ALT, payload, 'utf8'); } catch (err) {}
+    try { fs.writeFileSync(SYS_TRIAL_FILE_APP, payload, 'utf8'); } catch (err) {}
+    writeConfig({ trialRecord: trial });
+  }
 
   // Calculate day number (1 to 5, or 6 if expired)
   const dayNumber = isExpired ? 6 : Math.min(5, Math.floor(elapsedDaysDecimal) + 1);
@@ -513,9 +565,9 @@ function getMachineId() {
 
 const ENCRYPTION_KEY = crypto.createHash('sha256').update('OverdeskNexusLicenseSalt2026').digest();
 
-function writeEncryptedLicense(licenseKey, machineId, planType = 'lifetime', variantName = 'Lifetime Access') {
+function writeEncryptedLicense(licenseKey, machineId, planType = 'lifetime', variantName = 'Lifetime Access', activatedAt = Date.now()) {
   try {
-    const data = JSON.stringify({ licenseKey, machineId, planType, variantName });
+    const data = JSON.stringify({ licenseKey, machineId, planType, variantName, activatedAt });
     const iv = crypto.randomBytes(16);
     const cipher = crypto.createCipheriv('aes-256-cbc', ENCRYPTION_KEY, iv);
     let encrypted = cipher.update(data, 'utf8', 'hex');
@@ -659,14 +711,51 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
       }
 
       if (uses === 1 || storedMachineId === currentMachineId) {
-        // Extract plan variant (Annual Subscription vs Lifetime Access)
-        const rawVariant = (data.purchase && (data.purchase.variant_name || data.purchase.option || (data.purchase.variants && Object.values(data.purchase.variants).join(' ')))) || '';
-        const isAnnual = rawVariant.toLowerCase().includes('annual') || rawVariant.toLowerCase().includes('year') || rawVariant.toLowerCase().includes('subscription') || Boolean(data.purchase && data.purchase.subscription_id);
-        const planType = isAnnual ? 'annual' : 'lifetime';
-        const variantName = rawVariant || (isAnnual ? 'Annual Subscription (1 Year)' : 'Lifetime Access');
+        // Extract plan variant (Trial vs Annual vs Lifetime)
+        const rawVariant = (data.purchase && (
+          data.purchase.variant_name || 
+          data.purchase.option || 
+          (data.purchase.variants && Object.values(data.purchase.variants).join(' ')) ||
+          data.purchase.option_id
+        )) || '';
 
-        // Check if subscription has ended or cancelled
-        if (isAnnual && data.purchase && (data.purchase.subscription_ended_at || data.purchase.subscription_cancelled_at)) {
+        const fullCheckStr = (rawVariant + ' ' + JSON.stringify(data.purchase || {})).toLowerCase();
+
+        let planType = 'lifetime';
+        let variantName = 'Lifetime Access';
+
+        if (
+          fullCheckStr.includes('qllzvmpqab6m9w92clrjyw') || 
+          fullCheckStr.includes('trial')
+        ) {
+          planType = 'trial';
+          variantName = rawVariant || 'Trial Access';
+        } else if (
+          fullCheckStr.includes('dih5cg0o3nvuoef7xrhtyw') || 
+          fullCheckStr.includes('annual') || 
+          fullCheckStr.includes('year') || 
+          fullCheckStr.includes('subscription') || 
+          Boolean(data.purchase && data.purchase.subscription_id)
+        ) {
+          planType = 'annual';
+          variantName = rawVariant || 'Annual Subscription (1 Year)';
+        } else if (
+          fullCheckStr.includes('z7fdvim6isjecljzypubqw') || 
+          fullCheckStr.includes('lifetime')
+        ) {
+          planType = 'lifetime';
+          variantName = rawVariant || 'Lifetime Access';
+        }
+
+        // Check if trial key was previously used and expired on this machine
+        const currentConfig = readConfig();
+        const usedTrialKeys = currentConfig.usedTrialKeys || [];
+        if (planType === 'trial' && usedTrialKeys.includes(licenseKey)) {
+          return { ok: false, error: 'This trial license key has already been used and expired. Please purchase an Annual or Lifetime license.' };
+        }
+
+        // Check if annual subscription has ended or cancelled
+        if (planType === 'annual' && data.purchase && (data.purchase.subscription_ended_at || data.purchase.subscription_cancelled_at)) {
           const endDateStr = data.purchase.subscription_ended_at || data.purchase.subscription_cancelled_at;
           const endDate = new Date(endDateStr).getTime();
           if (endDate < Date.now()) {
@@ -674,16 +763,30 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
           }
         }
 
-        writeEncryptedLicense(licenseKey, currentMachineId, planType, variantName);
-        writeConfig({ licenseValid: true, licenseKey, planType, variantName });
+        const nowTime = Date.now();
+        const updatedUsedTrialKeys = planType === 'trial' ? Array.from(new Set([...usedTrialKeys, licenseKey])) : usedTrialKeys;
+
+        writeEncryptedLicense(licenseKey, currentMachineId, planType, variantName, nowTime);
+        writeConfig({ 
+          licenseValid: true, 
+          licenseKey, 
+          planType, 
+          variantName, 
+          activatedAt: nowTime, 
+          usedTrialKeys: updatedUsedTrialKeys 
+        });
+
         try {
           const sysTrial = getSystemTrialRecord();
           sysTrial.licenseValid = true;
           sysTrial.licenseKey = licenseKey;
           sysTrial.planType = planType;
           sysTrial.variantName = variantName;
+          sysTrial.activatedAt = nowTime;
+          sysTrial.usedTrialKeys = updatedUsedTrialKeys;
           fs.writeFileSync(SYS_TRIAL_FILE, JSON.stringify(sysTrial, null, 2), 'utf8');
         } catch (e) {}
+
         return { ok: true, planType, variantName };
       }
     }
