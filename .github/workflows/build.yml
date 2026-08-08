@@ -32,10 +32,11 @@ jobs:
       - name: Build Web Application (React/Vite)
         run: npm run build
 
-      - name: Build & Publish Release (Electron Builder)
+      - name: Build Executable (Electron Builder)
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx --no-install electron-builder --win --publish onTagOrDraft
+        run: npx --no-install electron-builder --win --publish never
 
       - name: Upload Installer Artifact to GitHub Action Artifacts
         if: always()
