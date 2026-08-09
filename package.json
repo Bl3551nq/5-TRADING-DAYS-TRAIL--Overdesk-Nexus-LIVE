@@ -1,12 +1,12 @@
 {
   "name": "overdesk-nexus",
   "private": true,
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Overdesk Nexus - All-in-one transparent desktop dashboard widget.",
   "author": "Overdesk",
   "repository": {
     "type": "git",
-    "url": "https://github.com/Bl3551nq/Overdesk-2-1.git"
+    "url": "https://github.com/Bl3551nq/5-TRADING-DAYS-TRAIL--Overdesk-Nexus-LIVE.git"
   },
   "type": "module",
   "main": "electron/main.cjs",
@@ -34,7 +34,7 @@
     "publish": {
       "provider": "github",
       "owner": "Bl3551nq",
-      "repo": "Overdesk-2-1"
+      "repo": "5-TRADING-DAYS-TRAIL--Overdesk-Nexus-LIVE"
     },
     "directories": {
       "output": "dist-electron"
