@@ -38,6 +38,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npx --no-install electron-builder --win --publish never
 
+      - name: Get App Version
+        run: node -e "const fs = require('fs'); fs.appendFileSync(process.env.GITHUB_ENV, 'VERSION=' + require('./package.json').version + '\n')"
+
       - name: Upload Installer Artifact to GitHub Action Artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -49,10 +52,13 @@ jobs:
             dist-electron/*.blockmap
           if-no-files-found: warn
 
-      - name: Ensure Assets Attached to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Publish Assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Overdesk Nexus v${{ env.VERSION }}
+          draft: false
+          prerelease: false
           files: |
             dist-electron/*.exe
             dist-electron/*.yml
