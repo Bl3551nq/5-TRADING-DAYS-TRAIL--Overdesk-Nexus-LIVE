@@ -19,6 +19,7 @@ const PRESET_WALLPAPERS = [
   { id: 'cyber_trading_tunnel', name: 'Cyber Trading Tunnel', url: wallpaperCyberTunnel },
   { id: 'anime_discipline', name: 'Discipline Pushups', url: wallpaperAnimeDiscipline },
   { id: 'goku_silhouette_focus', name: 'Goku Focus Front', url: wallpaperGokuSilhouette },
+  { id: 'trading_days_trail_live', name: 'Trading Days Trail (Video)', url: 'https://raw.githubusercontent.com/Bl3551nq/5-TRADING-DAYS-TRAIL--Overdesk-Nexus-LIVE/main/walppaper%20vid.mp4' },
 ];
 
 // Declaration to access global Electron API from preload script
@@ -424,10 +425,19 @@ interface ModeDetail {
   baseOptions?: string[];
 }
 
+const resolveMediaUrl = (url: string): string => {
+  if (!url) return '';
+  if (url.includes('github.com/') && url.includes('/blob/')) {
+    return url.replace('github.com/', 'raw.githubusercontent.com/').replace('/blob/', '/');
+  }
+  return url;
+};
+
 const isVideoUrl = (url: string): boolean => {
   if (!url) return false;
-  if (url.startsWith('data:video/')) return true;
-  const cleanUrl = url.split('?')[0].toLowerCase();
+  const resolved = resolveMediaUrl(url);
+  if (resolved.startsWith('data:video/')) return true;
+  const cleanUrl = resolved.split('?')[0].toLowerCase();
   return (
     cleanUrl.endsWith('.mp4') ||
     cleanUrl.endsWith('.webm') ||
@@ -1789,7 +1799,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.2.3'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.2.4'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -2864,7 +2874,7 @@ export default function App() {
             {isVideoUrl(wallpaperUrl) ? (
               <>
                 <video
-                  src={wallpaperUrl}
+                  src={resolveMediaUrl(wallpaperUrl)}
                   autoPlay
                   loop
                   muted
@@ -2892,7 +2902,7 @@ export default function App() {
                 style={{
                   width: '100%',
                   height: '100%',
-                  backgroundImage: `linear-gradient(180deg, ${isLight ? 'rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.58) 100%' : 'rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0.55) 100%'}), url("${wallpaperUrl}")`,
+                  backgroundImage: `linear-gradient(180deg, ${isLight ? 'rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.58) 100%' : 'rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0.55) 100%'}), url("${resolveMediaUrl(wallpaperUrl)}")`,
                   backgroundSize: 'cover',
                   backgroundPosition: 'center',
                   backgroundRepeat: 'no-repeat',
@@ -3811,7 +3821,7 @@ export default function App() {
                           >
                             {isVideoUrl(wp.url) ? (
                               <video
-                                src={wp.url}
+                                src={resolveMediaUrl(wp.url)}
                                 autoPlay
                                 loop
                                 muted
@@ -3820,7 +3830,7 @@ export default function App() {
                               />
                             ) : (
                               <img
-                                src={wp.url}
+                                src={resolveMediaUrl(wp.url)}
                                 alt={wp.name}
                                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                 referrerPolicy="no-referrer"
@@ -4135,7 +4145,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.2.3
+                    v1.2.4
                   </span>
                 </div>
 
@@ -4150,7 +4160,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.2.3)');
+                        setUpdateStatusText('You are running the latest version (v1.2.4)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4188,7 +4198,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.2.3
+                Overdesk Nexus v1.2.4
               </div>
             </div>
           </div>
