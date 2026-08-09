@@ -669,6 +669,70 @@ export default function App() {
     localStorage.setItem('fm_move_checked_bottom', String(val));
   };
 
+  const [autoResetDaily, setAutoResetDaily] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('fm_auto_reset_daily');
+      return saved === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  const handleAutoResetDailyChange = (val: boolean) => {
+    setAutoResetDaily(val);
+    localStorage.setItem('fm_auto_reset_daily', String(val));
+    if (val) {
+      const d = new Date();
+      const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      if (!localStorage.getItem('fm_last_auto_reset_date')) {
+        localStorage.setItem('fm_last_auto_reset_date', todayStr);
+      }
+    }
+  };
+
+  // Auto-reset daily midnight checker
+  useEffect(() => {
+    if (!autoResetDaily) return;
+
+    const checkMidnightReset = () => {
+      const d = new Date();
+      const todayStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const lastResetStr = localStorage.getItem('fm_last_auto_reset_date');
+
+      if (!lastResetStr) {
+        localStorage.setItem('fm_last_auto_reset_date', todayStr);
+      } else if (lastResetStr !== todayStr) {
+        // Local midnight has passed -> Clear all checked items across all modes
+        const emptyChecklists: Record<string, number[]> = {};
+
+        setModes((prevModes) => {
+          const resetModes: Record<string, ModeDetail> = {};
+          Object.keys(prevModes).forEach((m) => {
+            emptyChecklists[m] = [];
+            localStorage.setItem('fm_sel_' + m, JSON.stringify([]));
+
+            const base = prevModes[m]?.baseOptions || DEFAULT_MODES[m]?.options || prevModes[m]?.options || [];
+            resetModes[m] = {
+              ...prevModes[m],
+              options: [...base],
+              baseOptions: [...base],
+            };
+          });
+          localStorage.setItem('fm_modes', JSON.stringify(resetModes));
+          localStorage.setItem('fm_state_ver', '5.0');
+          return resetModes;
+        });
+
+        setSelections(emptyChecklists);
+        localStorage.setItem('fm_last_auto_reset_date', todayStr);
+      }
+    };
+
+    checkMidnightReset();
+    const interval = setInterval(checkMidnightReset, 10000);
+    return () => clearInterval(interval);
+  }, [autoResetDaily]);
+
   const [animationsEnabled, setAnimationsEnabled] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem('fm_animations_enabled');
@@ -1154,6 +1218,7 @@ export default function App() {
     setAnimateMinimizedText(true);
     setAnimationsEnabled(true);
     setMoveCheckedToBottom(true);
+    setAutoResetDaily(false);
     setWallpaperUrl(wallpaperGokuBack);
     setCustomWallpapers([]);
     setWallpaperOpacity(60);
@@ -3612,6 +3677,19 @@ export default function App() {
                     { label: 'Disabled', onClick: () => handleMoveCheckedToBottomChange(false) },
                   ]}
                   activeIndex={moveCheckedToBottom ? 0 : 1}
+                  particleCount={12}
+                  animationTime={450}
+                />
+              </div>
+
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>Auto-reset Daily</span>
+                <GooeyNav
+                  items={[
+                    { label: 'Enabled', onClick: () => handleAutoResetDailyChange(true) },
+                    { label: 'Disabled', onClick: () => handleAutoResetDailyChange(false) },
+                  ]}
+                  activeIndex={autoResetDaily ? 0 : 1}
                   particleCount={12}
                   animationTime={450}
                 />
