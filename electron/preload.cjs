@@ -11,9 +11,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scaleEnd: (scale) => ipcRenderer.send('scale-end', scale),
   setIgnoreMouseEvents: (ignore, options) => ipcRenderer.send('set-ignore-mouse-events', ignore, options),
   saveIcon: (dataUrl) => ipcRenderer.send('save-icon', dataUrl),
+  checkForUpdates: () => ipcRenderer.send('check-for-updates'),
   installUpdate: () => ipcRenderer.send('install-update'),
+  onCheckingForUpdate: (cb) => {
+    ipcRenderer.on('checking-for-update', () => cb());
+  },
   onUpdateAvailable: (cb) => {
     ipcRenderer.on('update-available', (event, version) => cb(version));
+  },
+  onUpdateNotAvailable: (cb) => {
+    ipcRenderer.on('update-not-available', (event, version) => cb(version));
   },
   onDownloadProgress: (cb) => {
     ipcRenderer.on('download-progress', (event, percent) => cb(percent));

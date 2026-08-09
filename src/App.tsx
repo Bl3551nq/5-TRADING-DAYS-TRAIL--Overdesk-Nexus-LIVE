@@ -47,8 +47,11 @@ declare global {
       scaleStart: () => void;
       scaleEnd: (scale: number) => void;
       setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
+      checkForUpdates?: () => void;
       installUpdate: () => void;
+      onCheckingForUpdate?: (cb: () => void) => void;
       onUpdateAvailable?: (cb: (version: string) => void) => void;
+      onUpdateNotAvailable?: (cb: (version: string) => void) => void;
       onDownloadProgress?: (cb: (percent: number) => void) => void;
       onUpdateDownloaded?: (cb: () => void) => void;
       onUpdateError?: (cb: (err: string) => void) => void;
@@ -1466,6 +1469,8 @@ export default function App() {
   };
 
   // Auto Updater State
+  const [checkingUpdate, setCheckingUpdate] = useState<boolean>(false);
+  const [updateStatusText, setUpdateStatusText] = useState<string>('');
   const [updateAvailable, setUpdateAvailable] = useState<boolean>(false);
   const [updateVersion, setUpdateVersion] = useState<string>('');
   const [updateProgress, setUpdateProgress] = useState<number | null>(null);
@@ -1762,18 +1767,37 @@ export default function App() {
       document.body.classList.add('electron');
 
       // Hook up Electron automatic updater listeners
+      if (window.electronAPI.onCheckingForUpdate) {
+        window.electronAPI.onCheckingForUpdate(() => {
+          setCheckingUpdate(true);
+          setUpdateStatusText('Checking for updates...');
+        });
+      }
+
       if (window.electronAPI.onUpdateAvailable) {
         window.electronAPI.onUpdateAvailable((version) => {
+          setCheckingUpdate(false);
           setUpdateVersion(version);
           setUpdateAvailable(true);
           setUpdateDownloaded(false);
           setUpdateError(null);
+          setUpdateStatusText(`Update v${version} available!`);
+        });
+      }
+
+      if (window.electronAPI.onUpdateNotAvailable) {
+        window.electronAPI.onUpdateNotAvailable((version) => {
+          setCheckingUpdate(false);
+          setUpdateAvailable(false);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.2.3'})`);
+          setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
 
       if (window.electronAPI.onDownloadProgress) {
         window.electronAPI.onDownloadProgress((percent) => {
           setUpdateProgress(percent);
+          setUpdateStatusText(`Downloading update... ${percent}%`);
         });
       }
 
@@ -1781,14 +1805,23 @@ export default function App() {
         window.electronAPI.onUpdateDownloaded(() => {
           setUpdateDownloaded(true);
           setUpdateProgress(100);
+          setUpdateStatusText('Update downloaded! Ready to install.');
         });
       }
 
       if (window.electronAPI.onUpdateError) {
         window.electronAPI.onUpdateError((err) => {
+          setCheckingUpdate(false);
           setUpdateError(err);
           setUpdateInstalling(false);
+          setUpdateStatusText(err || 'Update check failed.');
+          setTimeout(() => setUpdateStatusText(''), 6000);
         });
+      }
+
+      // Automatically trigger update check on app load
+      if (window.electronAPI.checkForUpdates) {
+        window.electronAPI.checkForUpdates();
       }
     }
   }, []);
@@ -4093,6 +4126,64 @@ export default function App() {
                   </svg>
                   {resetConfirming ? '⚠️ Click again or Double-Click to Reset' : 'Double-Click to Reset App'}
                 </button>
+              </div>
+
+              {/* Software Update Section */}
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                    Software Update
+                  </span>
+                  <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
+                    v1.2.3
+                  </span>
+                </div>
+
+                <button
+                  onClick={() => {
+                    if (window.electronAPI?.checkForUpdates) {
+                      setCheckingUpdate(true);
+                      setUpdateStatusText('Checking for updates...');
+                      window.electronAPI.checkForUpdates();
+                    } else {
+                      setCheckingUpdate(true);
+                      setUpdateStatusText('Checking for updates...');
+                      setTimeout(() => {
+                        setCheckingUpdate(false);
+                        setUpdateStatusText('You are running the latest version (v1.2.3)');
+                        setTimeout(() => setUpdateStatusText(''), 4000);
+                      }, 1000);
+                    }
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '7px 12px',
+                    borderRadius: '10px',
+                    background: isLight ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.08)',
+                    border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.15)'),
+                    color: isLight ? '#0f172a' : '#ffffff',
+                    fontWeight: '600',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    transition: 'all 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+                  }}
+                  title="Check GitHub Releases for app updates"
+                >
+                  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ animation: checkingUpdate ? 'spin 1s linear infinite' : 'none' }}>
+                    <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
+                  </svg>
+                  {checkingUpdate ? 'Checking for Updates...' : 'Check for Updates'}
+                </button>
+
+                {updateStatusText && (
+                  <div style={{ fontSize: '9.5px', fontWeight: '600', textAlign: 'center', color: updateError ? '#ff5252' : (updateAvailable ? '#00e676' : (isLight ? '#0284c7' : '#38bdf8')), padding: '2px 4px' }}>
+                    {updateStatusText}
+                  </div>
+                )}
               </div>
 
               {/* Version Footer */}

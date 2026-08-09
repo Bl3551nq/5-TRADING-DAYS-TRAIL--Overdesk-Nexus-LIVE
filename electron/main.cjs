@@ -251,10 +251,25 @@ app.on('before-quit', () => {
 let isUpdateDownloaded = false;
 let userRequestedInstall = false;
 
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+
+autoUpdater.on('checking-for-update', () => {
+  if (mainWindow) {
+    mainWindow.webContents.send('checking-for-update');
+  }
+});
+
 autoUpdater.on('update-available', (info) => {
   isUpdateDownloaded = false;
   if (mainWindow) {
     mainWindow.webContents.send('update-available', info.version);
+  }
+});
+
+autoUpdater.on('update-not-available', (info) => {
+  if (mainWindow) {
+    mainWindow.webContents.send('update-not-available', info ? info.version : app.getVersion());
   }
 });
 
@@ -264,10 +279,10 @@ autoUpdater.on('download-progress', (progressObj) => {
   }
 });
 
-autoUpdater.on('update-downloaded', () => {
+autoUpdater.on('update-downloaded', (info) => {
   isUpdateDownloaded = true;
   if (mainWindow) {
-    mainWindow.webContents.send('update-downloaded');
+    mainWindow.webContents.send('update-downloaded', info ? info.version : '');
   }
   if (userRequestedInstall) {
     isQuitting = true;
@@ -278,12 +293,12 @@ autoUpdater.on('update-downloaded', () => {
 autoUpdater.on('error', (err) => {
   console.error('AutoUpdater error:', err);
   if (mainWindow) {
-    let cleanMessage = 'Update failed to download. Please check back later.';
+    let cleanMessage = 'Update check failed. Please check back later.';
     const rawMsg = err ? (err.message || String(err)) : '';
     if (rawMsg.includes('404') || rawMsg.includes('releases/download') || rawMsg.includes('github.com')) {
       cleanMessage = 'Update package file not found on GitHub release (404). Check release asset filename.';
     } else if (rawMsg.includes('net::ERR_') || rawMsg.includes('ENOTFOUND')) {
-      cleanMessage = 'Network connection error while downloading update.';
+      cleanMessage = 'Network connection error while checking for updates.';
     }
     mainWindow.webContents.send('update-error', cleanMessage);
   }
@@ -305,6 +320,17 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('Failed to configure launch on startup:', err);
   }
+
+  // Automatically check for updates on startup after 2 seconds
+  setTimeout(() => {
+    try {
+      autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+        console.error('AutoUpdater startup check error:', err);
+      });
+    } catch (err) {
+      console.error('AutoUpdater startup check catch:', err);
+    }
+  }, 2000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -992,6 +1018,16 @@ ipcMain.on('save-icon', (event, dataUrl) => {
     }
   } catch (err) {
     console.error('Error saving dynamic icon:', err);
+  }
+});
+
+ipcMain.on('check-for-updates', () => {
+  try {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.error('Error checking for updates on IPC request:', err);
+    });
+  } catch (err) {
+    console.error('Catch checking for updates on IPC request:', err);
   }
 });
 
