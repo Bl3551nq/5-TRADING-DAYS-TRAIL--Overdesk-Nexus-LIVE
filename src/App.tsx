@@ -4094,6 +4094,11 @@ export default function App() {
                   {resetConfirming ? '⚠️ Click again or Double-Click to Reset' : 'Double-Click to Reset App'}
                 </button>
               </div>
+
+              {/* Version Footer */}
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
+                Overdesk Nexus v1.2.3
+              </div>
             </div>
           </div>
         )}
