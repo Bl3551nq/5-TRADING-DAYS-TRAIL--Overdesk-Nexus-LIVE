@@ -1295,7 +1295,20 @@ export default function App() {
   };
 
   // License & 5-Day Persistent Trial State
-  const [licenseActive, setLicenseActive] = useState<boolean>(false); // default to false (License Page is default opening screen)
+  const [licenseActive, setLicenseActiveState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('fm_license_active') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const setLicenseActive = (active: boolean) => {
+    setLicenseActiveState(active);
+    try {
+      localStorage.setItem('fm_license_active', active ? '1' : '0');
+    } catch {}
+  };
   const [isTrial, setIsTrial] = useState<boolean>(false);
   const [trialStarted, setTrialStarted] = useState<boolean>(false);
   const [trialUsed, setTrialUsed] = useState<boolean>(false);
@@ -1800,7 +1813,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.2.6'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.2.8'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -4311,7 +4324,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.2.6
+                    v1.2.8
                   </span>
                 </div>
 
@@ -4326,7 +4339,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.2.6)');
+                        setUpdateStatusText('You are running the latest version (v1.2.8)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4364,7 +4377,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.2.6
+                Overdesk Nexus v1.2.8
               </div>
             </div>
           </div>
