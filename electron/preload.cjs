@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   checkLicense: (simDay) => ipcRenderer.invoke('check-license', simDay),
   validateLicense: (key) => ipcRenderer.invoke('validate-license', key),
+  startTrial: () => ipcRenderer.invoke('start-trial'),
   closeApp: () => ipcRenderer.send('close-app'),
   triggerAlarmNotification: (title, body) => ipcRenderer.send('trigger-alarm-notification', title, body),
   setHeight: (height) => ipcRenderer.send('set-height', height),

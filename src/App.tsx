@@ -11,6 +11,7 @@ import wallpaperNeonCandles from './assets/images/neon_candlesticks_178550734793
 import wallpaperCyberTunnel from './assets/images/cyber_trading_tunnel_1785507362848.jpg';
 import wallpaperAnimeDiscipline from './assets/images/anime_discipline_1785507376413.jpg';
 import wallpaperGokuSilhouette from './assets/images/goku_silhouette_focus_1785507390062.jpg';
+import wallpaperMoonTrader from './assets/images/moon_trader_candlesticks_1786274245256.jpg';
 
 const PRESET_WALLPAPERS = [
   { id: 'goku_back_focus', name: 'Goku Focus Back', url: wallpaperGokuBack },
@@ -19,7 +20,7 @@ const PRESET_WALLPAPERS = [
   { id: 'cyber_trading_tunnel', name: 'Cyber Trading Tunnel', url: wallpaperCyberTunnel },
   { id: 'anime_discipline', name: 'Discipline Pushups', url: wallpaperAnimeDiscipline },
   { id: 'goku_silhouette_focus', name: 'Goku Focus Front', url: wallpaperGokuSilhouette },
-  { id: 'trading_days_trail_live', name: 'Trading Days Trail (Video)', url: 'https://raw.githubusercontent.com/Bl3551nq/5-TRADING-DAYS-TRAIL--Overdesk-Nexus-LIVE/main/walppaper%20vid.mp4' },
+  { id: 'moon_trader_candlesticks', name: 'Moon Trader Charts', url: wallpaperMoonTrader },
 ];
 
 // Declaration to access global Electron API from preload script
@@ -29,19 +30,25 @@ declare global {
       checkLicense: (simDay?: number) => Promise<{
         ok: boolean;
         isTrial?: boolean;
+        trialStarted?: boolean;
+        trialUsed?: boolean;
         licenseValid?: boolean;
         trialExpired?: boolean;
+        licenseExpired?: boolean;
         dayNumber?: number;
         daysLeft?: number;
         hoursLeft?: number;
         planType?: 'annual' | 'lifetime';
         variantName?: string;
         key?: string;
+        expiresAt?: number | null;
         trialStartDate?: number;
         machineId?: string;
         ip?: string;
+        error?: string;
       }>;
-      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; planType?: 'annual' | 'lifetime'; variantName?: string }>;
+      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; planType?: 'annual' | 'lifetime'; variantName?: string; expiresAt?: number | null }>;
+      startTrial: () => Promise<{ ok: boolean; isTrial?: boolean; trialStarted?: boolean; trialUsed?: boolean; trialExpired?: boolean; dayNumber?: number; daysLeft?: number; hoursLeft?: number; trialStartDate?: number; error?: string }>;
       closeApp: () => void;
       setHeight: (height: number) => void;
       cardBounds: (bounds: { x: number; y: number; w: number; h: number; scale?: number }) => void;
@@ -425,19 +432,10 @@ interface ModeDetail {
   baseOptions?: string[];
 }
 
-const resolveMediaUrl = (url: string): string => {
-  if (!url) return '';
-  if (url.includes('github.com/') && url.includes('/blob/')) {
-    return url.replace('github.com/', 'raw.githubusercontent.com/').replace('/blob/', '/');
-  }
-  return url;
-};
-
 const isVideoUrl = (url: string): boolean => {
   if (!url) return false;
-  const resolved = resolveMediaUrl(url);
-  if (resolved.startsWith('data:video/')) return true;
-  const cleanUrl = resolved.split('?')[0].toLowerCase();
+  if (url.startsWith('data:video/')) return true;
+  const cleanUrl = url.split('?')[0].toLowerCase();
   return (
     cleanUrl.endsWith('.mp4') ||
     cleanUrl.endsWith('.webm') ||
@@ -1297,9 +1295,12 @@ export default function App() {
   };
 
   // License & 5-Day Persistent Trial State
-  const [licenseActive, setLicenseActive] = useState<boolean>(true); // active by default during trial / lifetime
-  const [isTrial, setIsTrial] = useState<boolean>(true);
+  const [licenseActive, setLicenseActive] = useState<boolean>(false); // default to false (License Page is default opening screen)
+  const [isTrial, setIsTrial] = useState<boolean>(false);
+  const [trialStarted, setTrialStarted] = useState<boolean>(false);
+  const [trialUsed, setTrialUsed] = useState<boolean>(false);
   const [trialExpired, setTrialExpired] = useState<boolean>(false);
+  const [licenseExpired, setLicenseExpired] = useState<boolean>(false);
   const [trialDayNumber, setTrialDayNumber] = useState<number>(1);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number>(5);
   const [trialHoursLeft, setTrialHoursLeft] = useState<number>(120);
@@ -1799,7 +1800,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.2.4'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.2.6'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -2143,24 +2144,39 @@ export default function App() {
   }, [isGripped]);
 
   // ── 5-Day Persistent Trial Evaluator & Gumroad License Verification ──
-  // ── 5-Day Persistent Trial Evaluator & Gumroad License Verification ──
   const evaluateLicenseAndTrialStatus = async (simDayOverride?: number) => {
     if (window.electronAPI) {
       document.body.classList.add('electron');
       const res = await window.electronAPI.checkLicense(simDayOverride);
-      if (res.licenseValid || res.isTrial === false) {
+      if (res.licenseValid && res.isTrial === false) {
         setLicenseActive(true);
         setIsTrial(false);
         setTrialExpired(false);
+        setLicenseExpired(false);
         setActivePlanType(res.planType || 'lifetime');
         setActiveVariantName(res.variantName || 'Lifetime Access');
+      } else if (res.licenseExpired) {
+        setLicenseActive(false);
+        setIsTrial(false);
+        setLicenseExpired(true);
+        setActivePlanType(res.planType || 'annual');
+        setLicenseAPIErrorText('Your license subscription has expired. Please enter a valid license key or purchase a new one at overdesk.store.');
       } else {
+        // Trial evaluation
         setIsTrial(true);
+        setTrialStarted(Boolean(res.trialStarted));
+        setTrialUsed(Boolean(res.trialUsed));
+
         const dayNum = res.dayNumber || 1;
         setTrialDayNumber(dayNum);
         setTrialDaysLeft(res.daysLeft !== undefined ? res.daysLeft : 5);
         setTrialHoursLeft(res.hoursLeft !== undefined ? res.hoursLeft : 120);
-        if (res.trialExpired || dayNum >= 6) {
+
+        if (!res.trialStarted) {
+          // Default opening screen is License Page
+          setLicenseActive(false);
+          setTrialExpired(false);
+        } else if (res.trialExpired || dayNum >= 6) {
           setTrialExpired(true);
           setLicenseActive(false);
         } else {
@@ -2170,23 +2186,64 @@ export default function App() {
       }
     } else {
       // Standard Web Browser Preview Fallback & Trial Engine
-      const isLifetimeValid = localStorage.getItem('fm_license_valid') === '1';
+      const isLicenseValid = localStorage.getItem('fm_license_valid') === '1';
       const storedPlanType = (localStorage.getItem('fm_plan_type') as 'annual' | 'lifetime') || 'lifetime';
       const storedVariant = localStorage.getItem('fm_variant_name') || 'Lifetime Access';
+      const expiresAtStr = localStorage.getItem('fm_license_expires_at');
+      const activatedAtStr = localStorage.getItem('fm_license_activated_at');
 
-      if (isLifetimeValid) {
+      if (isLicenseValid) {
+        if (storedPlanType === 'lifetime' || storedVariant.toLowerCase().includes('lifetime')) {
+          setLicenseActive(true);
+          setIsTrial(false);
+          setTrialExpired(false);
+          setLicenseExpired(false);
+          setActivePlanType('lifetime');
+          setActiveVariantName(storedVariant);
+          return;
+        }
+
+        let expiresAt = expiresAtStr ? parseInt(expiresAtStr, 10) : 0;
+        if (!expiresAt && activatedAtStr) {
+          const activatedAt = parseInt(activatedAtStr, 10);
+          if (activatedAt > 0) {
+            expiresAt = activatedAt + (365 * 24 * 60 * 60 * 1000);
+          }
+        }
+
+        if (expiresAt > 0 && Date.now() >= expiresAt) {
+          setLicenseActive(false);
+          setIsTrial(false);
+          setLicenseExpired(true);
+          setActivePlanType(storedPlanType);
+          setLicenseAPIErrorText('Your license subscription has expired. Please enter a valid license key or purchase a new one at overdesk.store.');
+          return;
+        }
+
         setLicenseActive(true);
         setIsTrial(false);
         setTrialExpired(false);
+        setLicenseExpired(false);
         setActivePlanType(storedPlanType);
         setActiveVariantName(storedVariant);
         return;
       }
 
+      const isStarted = localStorage.getItem('fm_trial_started') === '1';
+      const isUsed = localStorage.getItem('fm_trial_used') === '1' || isStarted;
+      setTrialStarted(isStarted);
+      setTrialUsed(isUsed);
+
+      if (!isStarted) {
+        setLicenseActive(false);
+        setTrialExpired(false);
+        return;
+      }
+
       let startTime = parseInt(localStorage.getItem('fm_trial_start_time') || '0', 10);
       if (!startTime || isNaN(startTime)) {
-        startTime = Date.now();
-        localStorage.setItem('fm_trial_start_time', startTime.toString());
+        setLicenseActive(false);
+        return;
       }
 
       let now = Date.now();
@@ -2210,6 +2267,7 @@ export default function App() {
       if (isExpired) {
         setTrialExpired(true);
         setLicenseActive(false);
+        localStorage.setItem('fm_trial_used', '1');
       } else {
         setTrialExpired(false);
         setLicenseActive(true);
@@ -2219,6 +2277,52 @@ export default function App() {
 
   const handleLicenseInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setLicenseInput(e.target.value);
+  };
+
+  const handleStartTrial = async () => {
+    if (trialUsed || trialExpired) {
+      setLicenseError(true);
+      setLicenseAPIErrorText('Your free trial has already been used. Please purchase a license to continue.');
+      setTimeout(() => setLicenseError(false), 2500);
+      return;
+    }
+
+    setLicenseAPIErrorText('Starting 5-day free trial...');
+    if (window.electronAPI?.startTrial) {
+      const res = await window.electronAPI.startTrial();
+      if (res.ok) {
+        setLicenseActive(true);
+        setIsTrial(true);
+        setTrialStarted(true);
+        setTrialUsed(true);
+        setTrialExpired(false);
+        setTrialDayNumber(res.dayNumber || 1);
+        setTrialDaysLeft(res.daysLeft !== undefined ? res.daysLeft : 5);
+        setTrialHoursLeft(res.hoursLeft !== undefined ? res.hoursLeft : 120);
+        setLicenseAPIErrorText('');
+        playSoundChime('complete');
+      } else {
+        setLicenseError(true);
+        setTrialUsed(true);
+        setLicenseAPIErrorText(res.error || 'Your free trial has already been used. Please purchase a license to continue.');
+      }
+    } else {
+      const now = Date.now();
+      localStorage.setItem('fm_trial_started', '1');
+      localStorage.setItem('fm_trial_used', '1');
+      localStorage.setItem('fm_trial_start_time', now.toString());
+
+      setLicenseActive(true);
+      setIsTrial(true);
+      setTrialStarted(true);
+      setTrialUsed(true);
+      setTrialExpired(false);
+      setTrialDayNumber(1);
+      setTrialDaysLeft(5);
+      setTrialHoursLeft(120);
+      setLicenseAPIErrorText('');
+      playSoundChime('complete');
+    }
   };
 
   const attemptActivation = async () => {
@@ -2237,6 +2341,7 @@ export default function App() {
         setLicenseActive(true);
         setIsTrial(false);
         setTrialExpired(false);
+        setLicenseExpired(false);
         const plan = resp.planType || (cleaned.toUpperCase().includes('ANNUAL') ? 'annual' : 'lifetime');
         const variant = resp.variantName || (plan === 'annual' ? 'Annual Subscription (1 Year)' : 'Lifetime Access');
         setActivePlanType(plan);
@@ -2250,6 +2355,8 @@ export default function App() {
           setLicenseAPIErrorText('This license has been refunded and is no longer valid.');
         } else if (err.includes('already activated') || err.includes('another device')) {
           setLicenseAPIErrorText('This license key is already activated on another device. Contact support to transfer.');
+        } else if (err.includes('trial license key has already been used')) {
+          setLicenseAPIErrorText('Your free trial has already been used. Please purchase a license to continue.');
         } else {
           setLicenseAPIErrorText('Invalid Key, get key from Gumroad');
         }
@@ -2259,12 +2366,23 @@ export default function App() {
       const isAnnual = cleaned.toUpperCase().includes('ANNUAL');
       const plan = isAnnual ? 'annual' : 'lifetime';
       const variant = isAnnual ? 'Annual Subscription (1 Year)' : 'Lifetime Access';
+      const now = Date.now();
+      const expiresAt = isAnnual ? now + (365 * 24 * 60 * 60 * 1000) : null;
+
       localStorage.setItem('fm_license_valid', '1');
       localStorage.setItem('fm_plan_type', plan);
       localStorage.setItem('fm_variant_name', variant);
+      localStorage.setItem('fm_license_activated_at', now.toString());
+      if (expiresAt) {
+        localStorage.setItem('fm_license_expires_at', expiresAt.toString());
+      } else {
+        localStorage.removeItem('fm_license_expires_at');
+      }
+
       setLicenseActive(true);
       setIsTrial(false);
       setTrialExpired(false);
+      setLicenseExpired(false);
       setActivePlanType(plan);
       setActiveVariantName(variant);
       setLicenseAPIErrorText('');
@@ -2874,7 +2992,7 @@ export default function App() {
             {isVideoUrl(wallpaperUrl) ? (
               <>
                 <video
-                  src={resolveMediaUrl(wallpaperUrl)}
+                  src={wallpaperUrl}
                   autoPlay
                   loop
                   muted
@@ -2902,7 +3020,7 @@ export default function App() {
                 style={{
                   width: '100%',
                   height: '100%',
-                  backgroundImage: `linear-gradient(180deg, ${isLight ? 'rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.58) 100%' : 'rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0.55) 100%'}), url("${resolveMediaUrl(wallpaperUrl)}")`,
+                  backgroundImage: `linear-gradient(180deg, ${isLight ? 'rgba(255, 255, 255, 0.35) 0%, rgba(255, 255, 255, 0.58) 100%' : 'rgba(0, 0, 0, 0.32) 0%, rgba(0, 0, 0, 0.55) 100%'}), url("${wallpaperUrl}")`,
                   backgroundSize: 'cover',
                   backgroundPosition: 'center',
                   backgroundRepeat: 'no-repeat',
@@ -2917,11 +3035,11 @@ export default function App() {
             <img 
               className="license-logo" 
               src={overdeskLogo} 
-              alt="Overdesk Checklist Logo" 
-              style={{ width: '80px', height: '80px', objectFit: 'contain', marginBottom: '2px' }}
+              alt="Overdesk Nexus Logo" 
+              style={{ width: '115px', height: '115px', objectFit: 'contain', marginBottom: '2px' }}
               referrerPolicy="no-referrer"
             />
-            {trialExpired ? (
+            {trialExpired || trialUsed ? (
               <div style={{
                 background: 'rgba(239, 68, 68, 0.16)',
                 border: '1px solid rgba(239, 68, 68, 0.35)',
@@ -2937,25 +3055,46 @@ export default function App() {
                 alignItems: 'center',
                 gap: '5px'
               }}>
-                🔒 5-DAY TRIAL EXPIRED
+                🔒 FREE TRIAL ALREADY USED
+              </div>
+            ) : licenseExpired ? (
+              <div style={{
+                background: 'rgba(245, 158, 11, 0.16)',
+                border: '1px solid rgba(245, 158, 11, 0.35)',
+                color: '#fbbf24',
+                padding: '3px 10px',
+                borderRadius: '999px',
+                fontSize: '10px',
+                fontWeight: '800',
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                marginBottom: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px'
+              }}>
+                ⏰ LICENSE SUBSCRIPTION EXPIRED
               </div>
             ) : null}
-            <div className="license-title">Overdesk Nexus 2.0</div>
-            <div className="license-sub">
-              {trialExpired ? (
-                <>
-                  Your 5-day free trial on this PC has ended.
-                  <br />
-                  Enter your Gumroad license key to unlock lifetime access.
-                </>
+
+            <div className="license-title">Overdesk Nexus</div>
+
+            <div className="license-sub" style={{ textAlign: 'center', maxWidth: '290px', margin: '0 auto 6px', lineHeight: '1.45' }}>
+              {trialExpired || trialUsed ? (
+                <span style={{ color: '#f87171', fontWeight: 700 }}>
+                  Your free trial has already been used. Please purchase a license to continue.
+                </span>
+              ) : licenseExpired ? (
+                <span style={{ color: '#fbbf24', fontWeight: 700 }}>
+                  Your annual subscription has expired. Please enter a valid license key or purchase a renewal.
+                </span>
               ) : (
                 <>
-                  Enter your license key to activate lifetime access.
-                  <br />
-                  Find your key inside your Gumroad purchase receipt.
+                  Activate your license key or start a 5-day free trial.
                 </>
               )}
             </div>
+
             <input
               className={`license-input ${licenseError ? 'error' : ''}`}
               id="license-input"
@@ -2968,6 +3107,7 @@ export default function App() {
                 if (e.key === 'Enter') attemptActivation();
               }}
             />
+
             {licenseAPIErrorText && (
               <div 
                 className="license-api-feedback"
@@ -2986,14 +3126,40 @@ export default function App() {
                 {licenseAPIErrorText}
               </div>
             )}
+
             <button className="license-btn" onClick={attemptActivation}>
-              {trialExpired ? 'Unlock Lifetime Access' : 'Activate License'}
+              {trialExpired || trialUsed || licenseExpired ? 'Unlock Access with Key' : 'Activate License'}
             </button>
+
+            {!trialUsed && !trialExpired && !licenseExpired && (
+              <div style={{ width: '100%', marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+                <div style={{ fontSize: '10px', color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold' }}>— OR —</div>
+                <button 
+                  className="license-btn trial-btn" 
+                  onClick={handleStartTrial}
+                >
+                  Start 5-Day Free Trial
+                </button>
+              </div>
+            )}
             
-            <div className="license-hint">
-              <span>
-                Get your license key at: <a href="https://overdesk.store" target="_blank" rel="noreferrer">overdesk.store</a>
-              </span>
+            <div className="license-hint" style={{ marginTop: '10px' }}>
+              <a 
+                href="https://overdesk.store" 
+                target="_blank" 
+                rel="noreferrer"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  color: '#38bdf8',
+                  fontWeight: '700',
+                  textDecoration: 'none',
+                  fontSize: '12px'
+                }}
+              >
+                🛒 Purchase License at overdesk.store →
+              </a>
             </div>
           </div>
         ) : (
@@ -3821,7 +3987,7 @@ export default function App() {
                           >
                             {isVideoUrl(wp.url) ? (
                               <video
-                                src={resolveMediaUrl(wp.url)}
+                                src={wp.url}
                                 autoPlay
                                 loop
                                 muted
@@ -3830,7 +3996,7 @@ export default function App() {
                               />
                             ) : (
                               <img
-                                src={resolveMediaUrl(wp.url)}
+                                src={wp.url}
                                 alt={wp.name}
                                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                 referrerPolicy="no-referrer"
@@ -4145,7 +4311,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.2.4
+                    v1.2.6
                   </span>
                 </div>
 
@@ -4160,7 +4326,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.2.4)');
+                        setUpdateStatusText('You are running the latest version (v1.2.6)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4198,7 +4364,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.2.4
+                Overdesk Nexus v1.2.6
               </div>
             </div>
           </div>

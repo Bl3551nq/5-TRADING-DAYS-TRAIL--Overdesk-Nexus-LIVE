@@ -415,6 +415,14 @@ function getLocalIpAddress() {
   return '127.0.0.1';
 }
 
+function saveSystemTrialRecord(trialRecord) {
+  const payload = JSON.stringify(trialRecord, null, 2);
+  try { fs.writeFileSync(SYS_TRIAL_FILE, payload, 'utf8'); } catch (err) {}
+  try { fs.writeFileSync(SYS_TRIAL_FILE_ALT, payload, 'utf8'); } catch (err) {}
+  try { fs.writeFileSync(SYS_TRIAL_FILE_APP, payload, 'utf8'); } catch (err) {}
+  writeConfig({ trialRecord });
+}
+
 function getSystemTrialRecord() {
   const machineId = getMachineId();
   const currentIp = getLocalIpAddress();
@@ -446,12 +454,20 @@ function getSystemTrialRecord() {
 
   let trialRecord = null;
   let isPermanentlyExpired = false;
+  let isUsed = false;
+  let isStarted = false;
   let earliestStart = Infinity;
 
   for (const r of records) {
     if (!r) continue;
     if (r.trialExpired === true || r.permanentlyLocked === true) {
       isPermanentlyExpired = true;
+    }
+    if (r.trialUsed === true) {
+      isUsed = true;
+    }
+    if (r.trialStarted === true) {
+      isStarted = true;
     }
     if (typeof r.trialStartDate === 'number' && r.trialStartDate < earliestStart) {
       earliestStart = r.trialStartDate;
@@ -461,35 +477,73 @@ function getSystemTrialRecord() {
 
   if (!trialRecord) {
     trialRecord = {
-      trialStartDate: Date.now(),
+      trialStarted: isStarted,
+      trialUsed: isUsed || isPermanentlyExpired,
+      trialStartDate: isStarted ? (earliestStart !== Infinity ? earliestStart : Date.now()) : null,
       machineId,
       firstIp: currentIp,
       created: new Date().toISOString()
     };
   } else {
-    trialRecord.trialStartDate = earliestStart;
+    trialRecord.trialStarted = isStarted || Boolean(trialRecord.trialStarted);
+    trialRecord.trialUsed = isUsed || isPermanentlyExpired || Boolean(trialRecord.trialUsed);
+    if (earliestStart !== Infinity) {
+      trialRecord.trialStartDate = earliestStart;
+    }
   }
 
-  const now = Date.now();
-  const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
-  if (isPermanentlyExpired || (now - trialRecord.trialStartDate >= FIVE_DAYS_MS)) {
-    trialRecord.trialExpired = true;
-    trialRecord.permanentlyLocked = true;
+  if (trialRecord.trialStarted && trialRecord.trialStartDate) {
+    const now = Date.now();
+    const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+    if (isPermanentlyExpired || (now - trialRecord.trialStartDate >= FIVE_DAYS_MS)) {
+      trialRecord.trialExpired = true;
+      trialRecord.permanentlyLocked = true;
+      trialRecord.trialUsed = true;
+    }
   }
 
   trialRecord.machineId = trialRecord.machineId || machineId;
   trialRecord.firstIp = trialRecord.firstIp || currentIp;
-  trialRecord.lastSeenTime = Math.max(trialRecord.lastSeenTime || 0, now);
+  trialRecord.lastSeenTime = Math.max(trialRecord.lastSeenTime || 0, Date.now());
 
-  // Sync to all locations
-  const payload = JSON.stringify(trialRecord, null, 2);
-  try { fs.writeFileSync(SYS_TRIAL_FILE, payload, 'utf8'); } catch (err) {}
-  try { fs.writeFileSync(SYS_TRIAL_FILE_ALT, payload, 'utf8'); } catch (err) {}
-  try { fs.writeFileSync(SYS_TRIAL_FILE_APP, payload, 'utf8'); } catch (err) {}
-  writeConfig({ trialRecord });
+  saveSystemTrialRecord(trialRecord);
 
   return trialRecord;
 }
+
+// Handler to start 5-day trial explicitly on button click
+ipcMain.handle('start-trial', (event) => {
+  const trial = getSystemTrialRecord();
+
+  if (trial.trialUsed || trial.trialExpired || trial.permanentlyLocked) {
+    return {
+      ok: false,
+      trialUsed: true,
+      error: 'Your free trial has already been used. Please purchase a license to continue.'
+    };
+  }
+
+  const startTime = Date.now();
+  trial.trialStarted = true;
+  trial.trialUsed = true;
+  trial.trialStartDate = startTime;
+  trial.trialExpired = false;
+  trial.permanentlyLocked = false;
+
+  saveSystemTrialRecord(trial);
+
+  return {
+    ok: true,
+    isTrial: true,
+    trialStarted: true,
+    trialUsed: true,
+    trialExpired: false,
+    dayNumber: 1,
+    daysLeft: 5,
+    hoursLeft: 120,
+    trialStartDate: startTime
+  };
+});
 
 // Check license and trial status
 ipcMain.handle('check-license', (event, simDay) => {
@@ -501,59 +555,93 @@ ipcMain.handle('check-license', (event, simDay) => {
   const savedPlanType = config.planType || encrypted?.planType || sysTrial.planType || 'lifetime';
   const savedVariantName = config.variantName || encrypted?.variantName || sysTrial.variantName || (savedPlanType === 'annual' ? 'Annual Subscription' : 'Lifetime Access');
   const activatedAt = config.activatedAt || encrypted?.activatedAt || sysTrial.activatedAt || 0;
+  const storedExpiresAt = config.expiresAt || encrypted?.expiresAt || sysTrial.expiresAt || null;
 
-  // Enforce Trial Key Expiration (7 Days)
-  if (isActivated && savedPlanType === 'trial') {
-    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-    if (activatedAt > 0 && (Date.now() - activatedAt >= SEVEN_DAYS_MS)) {
-      isActivated = false; // Lock app back to license page after trial period ends
-    }
-  }
-
-  // Enforce 1-Year Expiration for Annual Subscription Plans
-  if (isActivated && savedPlanType === 'annual') {
-    const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
-    if (activatedAt > 0 && (Date.now() - activatedAt >= ONE_YEAR_MS)) {
-      isActivated = false; // Lock app back to license page after 365 days
-    }
-  }
-
-  // If key activated and still valid
+  // If activated with a paid key
   if (isActivated) {
+    const isLifetime = savedPlanType === 'lifetime' || savedVariantName.toLowerCase().includes('lifetime');
+
+    if (isLifetime) {
+      // Lifetime License: NEVER expires, NEVER locks!
+      return {
+        ok: true,
+        isTrial: false,
+        licenseValid: true,
+        planType: 'lifetime',
+        variantName: savedVariantName || 'Lifetime Access',
+        key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
+      };
+    } else {
+      // Subscription / Annual / Dated Plan: Calculate expiration
+      let expiresAt = storedExpiresAt;
+      if (!expiresAt && activatedAt > 0) {
+        if (savedPlanType === 'annual') {
+          expiresAt = activatedAt + (365 * 24 * 60 * 60 * 1000);
+        } else if (savedPlanType === 'monthly') {
+          expiresAt = activatedAt + (30 * 24 * 60 * 60 * 1000);
+        }
+      }
+
+      if (expiresAt && Date.now() >= expiresAt) {
+        // License EXPIRED! Lock app back to license page
+        return {
+          ok: false,
+          isTrial: false,
+          licenseValid: false,
+          licenseExpired: true,
+          planType: savedPlanType,
+          expiresAt,
+          error: 'Your license subscription has expired. Please enter a valid license key or purchase a new one at overdesk.store.'
+        };
+      }
+
+      return {
+        ok: true,
+        isTrial: false,
+        licenseValid: true,
+        licenseExpired: false,
+        planType: savedPlanType,
+        variantName: savedVariantName,
+        expiresAt,
+        key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
+      };
+    }
+  }
+
+  // Not activated with paid key -> Check trial status
+  const trial = sysTrial;
+  const trialStarted = Boolean(trial.trialStarted);
+  const trialUsed = Boolean(trial.trialUsed || trial.trialStarted || trial.permanentlyLocked);
+
+  if (!trialStarted) {
+    // Trial NOT started yet -> Default opening screen (License Page)
     return {
-      ok: true,
-      isTrial: false,
-      licenseValid: true,
-      planType: savedPlanType,
-      variantName: savedVariantName,
-      key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
+      ok: false,
+      isTrial: true,
+      trialStarted: false,
+      trialUsed: trialUsed,
+      trialExpired: false,
+      licenseValid: false
     };
   }
 
-  // Retrieve persistent hardware trial record
-  const trial = sysTrial;
+  // Trial IS started -> Check 5-day expiration
   let now = Date.now();
-
-  // Simulated day override support for developer testing
-  if (typeof simDay === 'number' && simDay >= 1) {
+  if (typeof simDay === 'number' && simDay >= 1 && trial.trialStartDate) {
     now = trial.trialStartDate + (simDay - 1) * 24 * 60 * 60 * 1000 + 1000;
   }
 
-  const elapsedMs = Math.max(0, now - trial.trialStartDate);
+  const elapsedMs = trial.trialStartDate ? Math.max(0, now - trial.trialStartDate) : 0;
   const elapsedDaysDecimal = elapsedMs / (1000 * 60 * 60 * 24);
   const isExpired = trial.trialExpired || trial.permanentlyLocked || elapsedDaysDecimal >= 5;
 
   if (isExpired && (!trial.trialExpired || !trial.permanentlyLocked)) {
     trial.trialExpired = true;
     trial.permanentlyLocked = true;
-    const payload = JSON.stringify(trial, null, 2);
-    try { fs.writeFileSync(SYS_TRIAL_FILE, payload, 'utf8'); } catch (err) {}
-    try { fs.writeFileSync(SYS_TRIAL_FILE_ALT, payload, 'utf8'); } catch (err) {}
-    try { fs.writeFileSync(SYS_TRIAL_FILE_APP, payload, 'utf8'); } catch (err) {}
-    writeConfig({ trialRecord: trial });
+    trial.trialUsed = true;
+    saveSystemTrialRecord(trial);
   }
 
-  // Calculate day number (1 to 5, or 6 if expired)
   const dayNumber = isExpired ? 6 : Math.min(5, Math.floor(elapsedDaysDecimal) + 1);
   const daysLeft = isExpired ? 0 : Math.max(0, Math.ceil(5 - elapsedDaysDecimal));
   const hoursLeft = isExpired ? 0 : Math.max(0, Math.ceil((5 * 24) - (elapsedMs / (1000 * 60 * 60))));
@@ -561,6 +649,8 @@ ipcMain.handle('check-license', (event, simDay) => {
   return {
     ok: !isExpired,
     isTrial: true,
+    trialStarted: true,
+    trialUsed: true,
     licenseValid: false,
     trialExpired: isExpired,
     dayNumber,
