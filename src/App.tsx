@@ -1341,32 +1341,29 @@ export default function App() {
   // Modular Modes Storage
   const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
     try {
-      const ver = localStorage.getItem('fm_state_ver');
-      if (ver === '5.0') {
-        const saved = localStorage.getItem('fm_modes');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-            const mergedObj: Record<string, ModeDetail> = {};
-            Object.keys(parsed).forEach((k) => {
-              const def = DEFAULT_MODES[k];
-              const opts = Array.isArray(parsed[k]?.options) && parsed[k].options.length > 0 ? parsed[k].options : (def?.options || []);
-              const baseOpts = Array.isArray(parsed[k]?.baseOptions) && parsed[k].baseOptions.length > 0
-                ? parsed[k].baseOptions
-                : (def?.baseOptions || [...opts]);
+      const saved = localStorage.getItem('fm_modes');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          const mergedObj: Record<string, ModeDetail> = {};
+          Object.keys(parsed).forEach((k) => {
+            const def = DEFAULT_MODES[k];
+            const opts = Array.isArray(parsed[k]?.options) ? parsed[k].options : (def?.options || []);
+            const baseOpts = Array.isArray(parsed[k]?.baseOptions) && parsed[k].baseOptions.length > 0
+              ? parsed[k].baseOptions
+              : (def?.baseOptions || [...opts]);
 
-              mergedObj[k] = {
-                title: parsed[k]?.title || def?.title || k,
-                accent: parsed[k]?.accent || def?.accent || 'rgba(30, 140, 255, 0.9)',
-                soft: parsed[k]?.soft || def?.soft || 'rgba(60, 170, 255, 0.18)',
-                defaultAccent: parsed[k]?.defaultAccent || def?.defaultAccent || 'rgba(30, 140, 255, 0.9)',
-                defaultSoft: parsed[k]?.defaultSoft || def?.defaultSoft || 'rgba(60, 170, 255, 0.18)',
-                options: opts,
-                baseOptions: baseOpts,
-              };
-            });
-            if (Object.keys(mergedObj).length > 0) return mergedObj;
-          }
+            mergedObj[k] = {
+              title: parsed[k]?.title || def?.title || k,
+              accent: parsed[k]?.accent || def?.accent || 'rgba(30, 140, 255, 0.9)',
+              soft: parsed[k]?.soft || def?.soft || 'rgba(60, 170, 255, 0.18)',
+              defaultAccent: parsed[k]?.defaultAccent || def?.defaultAccent || 'rgba(30, 140, 255, 0.9)',
+              defaultSoft: parsed[k]?.defaultSoft || def?.defaultSoft || 'rgba(60, 170, 255, 0.18)',
+              options: opts,
+              baseOptions: baseOpts,
+            };
+          });
+          if (Object.keys(mergedObj).length > 0) return mergedObj;
         }
       }
     } catch (e) {}
@@ -1376,30 +1373,43 @@ export default function App() {
   // Current selections for each mode
   const [selections, setSelections] = useState<Record<string, number[]>>(() => {
     const defaultSels: Record<string, number[]> = {};
-    Object.keys(DEFAULT_MODES).forEach((m) => {
-      try {
-        const savedS = localStorage.getItem('fm_sel_' + m);
-        if (savedS) {
-          defaultSels[m] = JSON.parse(savedS);
-        } else {
+    try {
+      const savedModesStr = localStorage.getItem('fm_modes');
+      let modeKeys = Object.keys(DEFAULT_MODES);
+      if (savedModesStr) {
+        try {
+          const parsed = JSON.parse(savedModesStr);
+          if (parsed && typeof parsed === 'object') {
+            modeKeys = Array.from(new Set([...modeKeys, ...Object.keys(parsed)]));
+          }
+        } catch (e) {}
+      }
+      modeKeys.forEach((m) => {
+        try {
+          const savedS = localStorage.getItem('fm_sel_' + m);
+          if (savedS) {
+            defaultSels[m] = JSON.parse(savedS);
+          } else {
+            defaultSels[m] = [];
+          }
+        } catch (e) {
           defaultSels[m] = [];
         }
-      } catch (e) {
+      });
+    } catch (e) {
+      Object.keys(DEFAULT_MODES).forEach((m) => {
         defaultSels[m] = [];
-      }
-    });
+      });
+    }
     return defaultSels;
   });
 
   // Mode customizer icons assignment
   const [iconAssignments, setIconAssignments] = useState<Record<string, string>>(() => {
     try {
-      const ver = localStorage.getItem('fm_state_ver');
-      if (ver === '5.0') {
-        const saved = localStorage.getItem('fm_icons');
-        if (saved) {
-          return JSON.parse(saved);
-        }
+      const saved = localStorage.getItem('fm_icons');
+      if (saved) {
+        return JSON.parse(saved);
       }
     } catch (e) {}
     return {
@@ -1753,33 +1763,6 @@ export default function App() {
 
   // ── Sync states on load ──
   useEffect(() => {
-    // Clear stale old states if any config mismatch from legacy assets
-    const ver = localStorage.getItem('fm_state_ver');
-    if (ver !== '5.1') {
-      localStorage.removeItem('fm_modes');
-      localStorage.removeItem('fm_theme');
-      localStorage.removeItem('fm_scale');
-      localStorage.removeItem('fm_icons');
-      Object.keys(DEFAULT_MODES).forEach((m) => localStorage.removeItem('fm_sel_' + m));
-      localStorage.setItem('fm_state_ver', '5.1');
-      setModes(DEFAULT_MODES);
-      setSelections({
-        business: [],
-        life: [],
-        pc: [],
-        sync: [],
-        alerts: [],
-      });
-      setIconAssignments({
-        business: 'candlestick',
-        life: 'stop_loss',
-        pc: 'smart_money',
-        sync: 'instant_execution',
-        alerts: 'trade_journal',
-      });
-      setCurrentMode('business');
-    }
-
     // Determine stored Theme
     const isLightStored = localStorage.getItem('fm_theme') === '1';
     setIsLight(isLightStored);
@@ -1813,7 +1796,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.2.8'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.2.9'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -1865,6 +1848,12 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('fm_modes', JSON.stringify(modes));
   }, [modes]);
+
+  useEffect(() => {
+    Object.keys(selections).forEach((m) => {
+      localStorage.setItem('fm_sel_' + m, JSON.stringify(selections[m] || []));
+    });
+  }, [selections]);
 
   useEffect(() => {
     localStorage.setItem('fm_theme', isLight ? '1' : '0');
@@ -4324,7 +4313,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.2.8
+                    v1.2.9
                   </span>
                 </div>
 
@@ -4339,7 +4328,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.2.8)');
+                        setUpdateStatusText('You are running the latest version (v1.2.9)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4377,7 +4366,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.2.8
+                Overdesk Nexus v1.2.9
               </div>
             </div>
           </div>
