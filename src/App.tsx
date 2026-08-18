@@ -1796,7 +1796,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.3.0'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.3.1'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -4385,7 +4385,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.3.0
+                    v1.3.1
                   </span>
                 </div>
 
@@ -4400,7 +4400,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.3.0)');
+                        setUpdateStatusText('You are running the latest version (v1.3.1)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4438,7 +4438,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.3.0
+                Overdesk Nexus v1.3.1
               </div>
             </div>
           </div>

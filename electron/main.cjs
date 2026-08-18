@@ -5,6 +5,24 @@ const crypto = require('crypto');
 const os = require('os');
 const { autoUpdater } = require('electron-updater');
 
+// Ensure single instance of the application
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Another instance is already running; quit this duplicate instance immediately
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // When a second instance is launched (e.g. from Start Menu, Desktop, or duplicate click),
+    // restore and focus the existing window instead of opening a new one
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // Keep variables in higher scope to prevent garbage collection
 let mainWindow = null;
 let tray = null;
@@ -333,7 +351,11 @@ app.whenReady().then(() => {
   }, 2000);
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    } else if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
   });
