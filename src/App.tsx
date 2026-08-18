@@ -1317,7 +1317,13 @@ export default function App() {
   const [trialDayNumber, setTrialDayNumber] = useState<number>(1);
   const [trialDaysLeft, setTrialDaysLeft] = useState<number>(5);
   const [trialHoursLeft, setTrialHoursLeft] = useState<number>(120);
-  const [activePlanType, setActivePlanType] = useState<'annual' | 'lifetime'>('lifetime');
+  const [activePlanType, setActivePlanType] = useState<'annual' | 'lifetime' | 'trial'>(() => {
+    try {
+      const stored = localStorage.getItem('fm_plan_type');
+      if (stored === 'annual' || stored === 'lifetime' || stored === 'trial') return stored;
+    } catch {}
+    return 'lifetime';
+  });
   const [activeVariantName, setActiveVariantName] = useState<string>('Lifetime Access');
   const [simulatedDayOverride, setSimulatedDayOverride] = useState<number | null>(null);
   const [licenseInput, setLicenseInput] = useState<string>('');
@@ -3884,18 +3890,23 @@ export default function App() {
               onMouseDown={(e) => e.stopPropagation()}
               style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '6px 4px 16px', flex: 1, minHeight: 0 }}
             >
-              {/* License Status Section (Only shown when activated) */}
-              {!isTrial && (
-                <div className="setting-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
-                  <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
-                    License Status
+              {/* License Status Section (Always shown at top of settings) */}
+              <div className="setting-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
+                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                  License Status
+                </span>
+                {isTrial || activePlanType === 'trial' ? (
+                  <span style={{ fontSize: '9.5px', fontWeight: '700', color: '#fbbf24', background: 'rgba(251, 191, 36, 0.14)', padding: '2px 8px', borderRadius: '999px', border: '1px solid rgba(251, 191, 36, 0.35)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#fbbf24', display: 'inline-block' }} />
+                    5-DAY TRIAL ({trialDaysLeft}D LEFT)
                   </span>
+                ) : (
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.14)' : 'rgba(0,230,118,0.14)', padding: '2px 8px', borderRadius: '999px', border: activePlanType === 'annual' ? '1px solid rgba(56,189,248,0.35)' : '1px solid rgba(0,230,118,0.3)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
                     <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activePlanType === 'annual' ? '#38bdf8' : '#00e676', display: 'inline-block' }} />
                     {activePlanType === 'annual' ? 'ANNUAL PLAN' : 'LIFETIME UNLOCKED'}
                   </span>
-                </div>
-              )}
+                )}
+              </div>
               <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>Window Scale</span>
                 <GooeyNav
@@ -4385,7 +4396,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.3.1
+                    v1.3.2
                   </span>
                 </div>
 
@@ -4400,7 +4411,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.3.1)');
+                        setUpdateStatusText('You are running the latest version (v1.3.2)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4438,7 +4449,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.3.1
+                Overdesk Nexus v1.3.2
               </div>
             </div>
           </div>
