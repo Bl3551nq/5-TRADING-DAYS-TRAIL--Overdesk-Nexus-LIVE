@@ -38,7 +38,7 @@ declare global {
         dayNumber?: number;
         daysLeft?: number;
         hoursLeft?: number;
-        planType?: 'annual' | 'lifetime';
+        planType?: 'annual' | 'lifetime' | 'trial';
         variantName?: string;
         key?: string;
         expiresAt?: number | null;
@@ -47,7 +47,7 @@ declare global {
         ip?: string;
         error?: string;
       }>;
-      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; planType?: 'annual' | 'lifetime'; variantName?: string; expiresAt?: number | null }>;
+      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; isTrial?: boolean; planType?: 'annual' | 'lifetime' | 'trial'; variantName?: string; expiresAt?: number | null; daysRemaining?: number }>;
       startTrial: () => Promise<{ ok: boolean; isTrial?: boolean; trialStarted?: boolean; trialUsed?: boolean; trialExpired?: boolean; dayNumber?: number; daysLeft?: number; hoursLeft?: number; trialStartDate?: number; error?: string }>;
       closeApp: () => void;
       setHeight: (height: number) => void;
@@ -1796,7 +1796,7 @@ export default function App() {
         window.electronAPI.onUpdateNotAvailable((version) => {
           setCheckingUpdate(false);
           setUpdateAvailable(false);
-          setUpdateStatusText(`You are on the latest version (v${version || '1.2.9'})`);
+          setUpdateStatusText(`You are on the latest version (v${version || '1.3.0'})`);
           setTimeout(() => setUpdateStatusText(''), 5000);
         });
       }
@@ -2214,6 +2214,17 @@ export default function App() {
         }
 
         if (expiresAt > 0 && Date.now() >= expiresAt) {
+          const currentKey = localStorage.getItem('fm_license_key');
+          let expiredList: string[] = [];
+          try {
+            expiredList = JSON.parse(localStorage.getItem('fm_expired_keys') || '[]');
+          } catch (e) {}
+          if (currentKey) {
+            expiredList = Array.from(new Set([...expiredList, currentKey.trim().toUpperCase()]));
+            localStorage.setItem('fm_expired_keys', JSON.stringify(expiredList));
+          }
+          localStorage.setItem('fm_license_valid', '0');
+          localStorage.setItem('fm_license_active', '0');
           setLicenseActive(false);
           setIsTrial(false);
           setLicenseExpired(true);
@@ -2336,10 +2347,41 @@ export default function App() {
       return;
     }
 
+    // Check if key is stored as expired
+    let expiredKeys: string[] = [];
+    try {
+      expiredKeys = JSON.parse(localStorage.getItem('fm_expired_keys') || '[]');
+    } catch (e) {}
+
+    if (expiredKeys.includes(cleaned.toUpperCase())) {
+      setLicenseError(true);
+      setLicenseAPIErrorText('This license key has expired and cannot be reused. Please purchase a new license at overdesk.store.');
+      setTimeout(() => setLicenseError(false), 3000);
+      return;
+    }
+
     setLicenseAPIErrorText('Verifying license key with Gumroad API...');
     if (window.electronAPI) {
       const resp = await window.electronAPI.validateLicense(cleaned);
       if (resp.ok) {
+        if (resp.isTrial || resp.planType === 'trial') {
+          setLicenseActive(true);
+          setIsTrial(true);
+          setTrialStarted(true);
+          setTrialExpired(false);
+          setLicenseExpired(false);
+          setTrialDaysLeft(resp.daysRemaining || 5);
+          setActivePlanType('trial');
+          setActiveVariantName(resp.variantName || 'Trial Access');
+          setLicenseAPIErrorText('');
+          localStorage.setItem('fm_license_key', cleaned);
+          localStorage.setItem('fm_plan_type', 'trial');
+          localStorage.setItem('fm_trial_started', '1');
+          localStorage.setItem('fm_trial_start_time', Date.now().toString());
+          playSoundChime('complete');
+          return;
+        }
+
         setLicenseActive(true);
         setIsTrial(false);
         setTrialExpired(false);
@@ -2349,29 +2391,74 @@ export default function App() {
         setActivePlanType(plan);
         setActiveVariantName(variant);
         setLicenseAPIErrorText('');
+        localStorage.setItem('fm_license_key', cleaned);
+        localStorage.setItem('fm_plan_type', plan);
         playSoundChime('complete');
       } else {
         setLicenseError(true);
         const err = resp.error || '';
-        if (err.includes('refunded')) {
+        if (err.includes('expired') || err.includes('cannot be reused')) {
+          setLicenseAPIErrorText(err || 'This license key has expired and cannot be reused.');
+          try {
+            const updated = Array.from(new Set([...expiredKeys, cleaned.toUpperCase()]));
+            localStorage.setItem('fm_expired_keys', JSON.stringify(updated));
+          } catch (e) {}
+        } else if (err.includes('refunded')) {
           setLicenseAPIErrorText('This license has been refunded and is no longer valid.');
         } else if (err.includes('already activated') || err.includes('another device')) {
           setLicenseAPIErrorText('This license key is already activated on another device. Contact support to transfer.');
-        } else if (err.includes('trial license key has already been used')) {
+        } else if (err.includes('trial license key has already been used') || err.includes('trial has already been used')) {
           setLicenseAPIErrorText('Your free trial has already been used. Please purchase a license to continue.');
         } else {
-          setLicenseAPIErrorText('Invalid Key, get key from Gumroad');
+          setLicenseAPIErrorText(resp.error || 'Invalid Key, get key from Gumroad');
         }
       }
     } else {
       // Fallback bypass mode on standard web preview
-      const isAnnual = cleaned.toUpperCase().includes('ANNUAL');
+      const upperKey = cleaned.toUpperCase();
+      const isAnnual = upperKey.includes('ANNUAL') || upperKey.includes('YEAR');
+      const isLifetime = upperKey.includes('LIFETIME') || upperKey.includes('PRO-LIFETIME');
+      const isTrialKey = !isAnnual && !isLifetime;
+
+      if (isTrialKey) {
+        const isStarted = localStorage.getItem('fm_trial_started') === '1';
+        const isUsed = localStorage.getItem('fm_trial_used') === '1' || isStarted;
+        let expiredKeysList: string[] = [];
+        try {
+          expiredKeysList = JSON.parse(localStorage.getItem('fm_expired_keys') || '[]');
+        } catch (e) {}
+
+        if (isUsed || expiredKeysList.includes(upperKey)) {
+          setLicenseError(true);
+          setLicenseAPIErrorText('This trial license key has expired. Please purchase an Annual or Lifetime license at overdesk.store.');
+          setTimeout(() => setLicenseError(false), 3000);
+          return;
+        }
+
+        const now = Date.now();
+        localStorage.setItem('fm_trial_started', '1');
+        localStorage.setItem('fm_trial_used', '1');
+        localStorage.setItem('fm_trial_start_time', now.toString());
+        localStorage.setItem('fm_plan_type', 'trial');
+        localStorage.setItem('fm_license_key', cleaned);
+        setLicenseActive(true);
+        setIsTrial(true);
+        setTrialStarted(true);
+        setTrialExpired(false);
+        setTrialDaysLeft(5);
+        setActivePlanType('trial');
+        setActiveVariantName('5-Day Trial Access');
+        playSoundChime('complete');
+        return;
+      }
+
       const plan = isAnnual ? 'annual' : 'lifetime';
       const variant = isAnnual ? 'Annual Subscription (1 Year)' : 'Lifetime Access';
       const now = Date.now();
       const expiresAt = isAnnual ? now + (365 * 24 * 60 * 60 * 1000) : null;
 
       localStorage.setItem('fm_license_valid', '1');
+      localStorage.setItem('fm_license_key', cleaned);
       localStorage.setItem('fm_plan_type', plan);
       localStorage.setItem('fm_variant_name', variant);
       localStorage.setItem('fm_license_activated_at', now.toString());
@@ -3799,29 +3886,14 @@ export default function App() {
             >
               {/* License Status Section (Only shown when activated) */}
               {!isTrial && (
-                <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
-                      License Status
-                    </span>
-                    <span style={{ fontSize: '9.5px', fontWeight: '700', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.14)' : 'rgba(0,230,118,0.14)', padding: '2px 7px', borderRadius: '999px', border: activePlanType === 'annual' ? '1px solid rgba(56,189,248,0.35)' : '1px solid rgba(0,230,118,0.3)' }}>
-                      {activePlanType === 'annual' ? '📅 ANNUAL PLAN' : '✓ LIFETIME UNLOCKED'}
-                    </span>
-                  </div>
-
-                  <div style={{ background: isLight ? (activePlanType === 'annual' ? 'rgba(56,189,248,0.06)' : 'rgba(0,230,118,0.06)') : (activePlanType === 'annual' ? 'rgba(56,189,248,0.08)' : 'rgba(0,230,118,0.08)'), borderRadius: '12px', padding: '10px 12px', border: '1px solid ' + (isLight ? (activePlanType === 'annual' ? 'rgba(56,189,248,0.25)' : 'rgba(0,230,118,0.2)') : (activePlanType === 'annual' ? 'rgba(56,189,248,0.3)' : 'rgba(0,230,118,0.25)')), display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.2)' : 'rgba(0,230,118,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', fontWeight: 'bold', fontSize: '13px' }}>
-                      {activePlanType === 'annual' ? '📅' : '✓'}
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column' }}>
-                      <span style={{ fontSize: '11px', fontWeight: '700', color: isLight ? '#0f172a' : '#ffffff' }}>
-                        Overdesk Nexus Pro ({activePlanType === 'annual' ? 'Annual Subscription' : 'Lifetime Plan'})
-                      </span>
-                      <span style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                        {activePlanType === 'annual' ? 'Active 1-Year subscription. Trial sticker permanently hidden.' : 'Lifetime access active. Trial sticker permanently hidden.'}
-                      </span>
-                    </div>
-                  </div>
+                <div className="setting-section" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--divider)', paddingBottom: '10px' }}>
+                  <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                    License Status
+                  </span>
+                  <span style={{ fontSize: '9.5px', fontWeight: '700', color: activePlanType === 'annual' ? '#38bdf8' : '#00e676', background: activePlanType === 'annual' ? 'rgba(56,189,248,0.14)' : 'rgba(0,230,118,0.14)', padding: '2px 8px', borderRadius: '999px', border: activePlanType === 'annual' ? '1px solid rgba(56,189,248,0.35)' : '1px solid rgba(0,230,118,0.3)', display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activePlanType === 'annual' ? '#38bdf8' : '#00e676', display: 'inline-block' }} />
+                    {activePlanType === 'annual' ? 'ANNUAL PLAN' : 'LIFETIME UNLOCKED'}
+                  </span>
                 </div>
               )}
               <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -4313,7 +4385,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.2.9
+                    v1.3.0
                   </span>
                 </div>
 
@@ -4328,7 +4400,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.2.9)');
+                        setUpdateStatusText('You are running the latest version (v1.3.0)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4366,7 +4438,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.2.9
+                Overdesk Nexus v1.3.0
               </div>
             </div>
           </div>
