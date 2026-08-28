@@ -54,8 +54,8 @@ body.electron .card {
 }
 
 body.electron button, body.electron input, body.electron .option, body.electron .icon-btn, 
-body.electron .edit-toggle, body.electron .close-btn, body.electron .add-btn, 
-body.electron .theme-switch, body.electron .minimize-pill, body.electron .minimize-bar,
+body.electron .edit-toggle, body.electron .settings-toggle, body.electron .close-btn, body.electron .add-btn, 
+body.electron .theme-switch, body.electron .eye-mode-toggle, body.electron .minimize-pill, body.electron .minimize-bar,
 body.electron .resize-handle, body.electron .reset-wrap, body.electron .color-swatch, 
 body.electron .color-custom-wrap, body.electron .title-wrap, body.electron .title, 
 body.electron .title-container-editable, body.electron .edit-title-btn,
@@ -169,6 +169,137 @@ body.electron input[type="range"]::-webkit-slider-runnable-track {
   --add-border: rgba(0, 0, 0, 0.14);
   --edit-bg: rgba(0, 0, 0, 0.06);
   --edit-hover: rgba(0, 0, 0, 0.14);
+}
+
+/* ═══════════════════════════════════════════════════════
+   EYE MODE (PURE CHECKLIST & MODE - CONTAINERLESS WIDGET)
+═══════════════════════════════════════════════════════ */
+.card.eye-mode {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 8px 10px 8px !important;
+}
+
+.card.eye-mode .wallpaper-layer {
+  display: none !important;
+  opacity: 0 !important;
+}
+
+/* Mode Switcher Bar in Eye Mode - Pure & Shadowless */
+.card.eye-mode .icons {
+  display: flex !important;
+  margin-bottom: 8px !important;
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.card.eye-mode .icon-wrap,
+.card.eye-mode .icon-wrap:hover,
+.card.eye-mode .icon-wrap.active-mode,
+.card.eye-mode .icon-wrap.splash-active {
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.card.eye-mode .mode-icon-glass,
+.card.eye-mode .mode-icon-glass:hover,
+.card.eye-mode .active-mode .mode-icon-glass,
+.card:not(.light).eye-mode .mode-icon-glass,
+.card.light.eye-mode .mode-icon-glass {
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.card.eye-mode .mode-icon-glass::before,
+.card.eye-mode .mode-icon-glass::after,
+.card:not(.light).eye-mode .mode-icon-glass::before,
+.card.light.eye-mode .mode-icon-glass::before {
+  box-shadow: none !important;
+}
+
+.card.eye-mode .icon-btn,
+.card.eye-mode .liquid-container {
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+}
+
+.card.eye-mode .divider {
+  display: none !important;
+}
+
+.card.eye-mode .mode-row {
+  margin-bottom: 2px !important;
+}
+
+.card.eye-mode .top-bar {
+  opacity: 0.38;
+  transition: opacity 0.22s ease;
+  margin-bottom: 4px !important;
+}
+
+.card.eye-mode:hover .top-bar,
+.card.eye-mode .top-bar:hover {
+  opacity: 1;
+}
+
+.card.eye-mode .minimize-bar,
+.card.eye-mode .close-btn,
+.card.eye-mode .edit-toggle {
+  opacity: 0.35;
+  transition: opacity 0.2s ease;
+}
+
+.card.eye-mode:hover .minimize-bar,
+.card.eye-mode:hover .close-btn,
+.card.eye-mode:hover .edit-toggle {
+  opacity: 1;
+}
+
+.card.eye-mode .option {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  padding: 6px 6px !important;
+  margin-bottom: 2px !important;
+  border-radius: 10px !important;
+}
+
+.card.eye-mode .option:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.card.light.eye-mode .option:hover {
+  background: rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Strip ALL shadows, glows, and filters in Eye Mode ONLY */
+.card.eye-mode,
+.card.eye-mode *,
+.card.eye-mode div,
+.card.eye-mode span,
+.card.eye-mode button,
+.card.eye-mode svg,
+.card.eye-mode img {
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
+  text-shadow: none !important;
+}
+
+.card.eye-mode ::before,
+.card.eye-mode ::after {
+  box-shadow: none !important;
+  filter: none !important;
+  -webkit-filter: none !important;
 }
 
 /* ═══════════════════════════════════════════════════════

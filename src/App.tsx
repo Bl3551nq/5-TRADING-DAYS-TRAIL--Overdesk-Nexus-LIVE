@@ -584,6 +584,13 @@ export default function App() {
   const [currentMode, setCurrentMode] = useState<string>('business');
   const [editMode, setEditMode] = useState<boolean>(false);
   const [isLight, setIsLight] = useState<boolean>(false);
+  const [isEyeMode, setIsEyeMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('fm_eye_mode') === '1';
+    } catch (e) {
+      return false;
+    }
+  });
   const [minimized, setMinimized] = useState<boolean>(false);
 
   // Countdown Timer State
@@ -3056,7 +3063,7 @@ export default function App() {
     >
       {/* Main checklist canvas card widget */}
       <div
-        className={`card ${isLight ? 'light' : ''} ${minimized ? 'minimized' : ''} ${isGripped ? 'gripped' : ''} ${!licenseActive ? 'license-mode' : ''}`}
+        className={`card ${isLight ? 'light' : ''} ${minimized ? 'minimized' : ''} ${isEyeMode ? 'eye-mode' : ''} ${isGripped ? 'gripped' : ''} ${!licenseActive ? 'license-mode' : ''}`}
         id="card"
         ref={cardRef}
         onPointerDown={handleCardPointerDown}
@@ -3300,42 +3307,102 @@ export default function App() {
 
         {/* Top Header Controls row */}
         <div className="top-bar" id="top-bar">
-          {/* Left Theme toggle button */}
-          <div
-            className="theme-switch"
-            id="theme-switch"
-            onClick={() => {
-              setIsLight(!isLight);
-              localStorage.setItem('fm_theme', !isLight ? '1' : '0');
-            }}
-          >
+          {/* Left Theme & Eye Mode Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            {/* Left Theme toggle button */}
             <div
-              className="theme-switch-knob"
-              id="theme-knob"
+              className="theme-switch"
+              id="theme-switch"
+              onClick={() => {
+                setIsLight(!isLight);
+                localStorage.setItem('fm_theme', !isLight ? '1' : '0');
+              }}
+              title={isLight ? "Switch to Dark Mode" : "Switch to Light Mode"}
+            >
+              <div
+                className="theme-switch-knob"
+                id="theme-knob"
+                style={{
+                  transform: isLight ? 'translateX(18px)' : 'translateX(0px)',
+                }}
+              >
+                {isLight ? (
+                  // Moon Icon
+                  <svg id="theme-icon" viewBox="0 0 24 24">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+                  </svg>
+                ) : (
+                  // Sun Icon
+                  <svg id="theme-icon" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="5" />
+                    <line x1="12" y1="1" x2="12" y2="3" />
+                    <line x1="12" y1="21" x2="12" y2="23" />
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                    <line x1="1" y1="12" x2="3" y2="12" />
+                    <line x1="21" y1="12" x2="23" y2="12" />
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                  </svg>
+                )}
+              </div>
+            </div>
+
+            {/* Eye Mode toggle button */}
+            <button
+              className={`eye-mode-toggle ${isEyeMode ? 'on' : ''}`}
+              id="eye-mode-toggle"
+              onClick={() => {
+                const next = !isEyeMode;
+                setIsEyeMode(next);
+                localStorage.setItem('fm_eye_mode', next ? '1' : '0');
+              }}
+              title={isEyeMode ? "Exit Eye Mode (Restore Card Container)" : "Eye Mode (Containerless / Pure Floating Checklist)"}
               style={{
-                transform: isLight ? 'translateX(18px)' : 'translateX(0px)',
+                background: isEyeMode 
+                  ? (isLight ? 'rgba(2, 132, 199, 0.16)' : 'rgba(56, 189, 248, 0.22)') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.08)'),
+                border: isEyeMode
+                  ? `1px solid ${isLight ? 'rgba(2, 132, 199, 0.45)' : 'rgba(56, 189, 248, 0.5)'}`
+                  : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)'}`,
+                borderRadius: '50%',
+                width: '26px',
+                height: '26px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                color: isEyeMode 
+                  ? (isLight ? '#0284c7' : '#38bdf8') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)'),
+                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                padding: 0,
+                margin: 0,
+                boxShadow: 'none',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'scale(1.1)';
+                e.currentTarget.style.color = isLight ? '#0284c7' : '#38bdf8';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'scale(1)';
+                e.currentTarget.style.color = isEyeMode 
+                  ? (isLight ? '#0284c7' : '#38bdf8') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)');
               }}
             >
-              {isLight ? (
-                // Moon Icon
-                <svg id="theme-icon" viewBox="0 0 24 24">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+              {isEyeMode ? (
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                  <circle cx="12" cy="12" r="3.5" fill="currentColor" />
                 </svg>
               ) : (
-                // Sun Icon
-                <svg id="theme-icon" viewBox="0 0 24 24">
-                  <circle cx="12" cy="12" r="5" />
-                  <line x1="12" y1="1" x2="12" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="23" />
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                  <line x1="1" y1="12" x2="3" y2="12" />
-                  <line x1="21" y1="12" x2="23" y2="12" />
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" />
+                  <circle cx="12" cy="12" r="3" />
                 </svg>
               )}
-            </div>
+            </button>
           </div>
 
           {/* Center Minimize Pill */}
@@ -3549,13 +3616,15 @@ export default function App() {
                 justifyContent: 'center',
                 gap: '8px',
                 alignItems: 'center',
-                marginBottom: '16px',
+                marginTop: 0,
+                marginLeft: 0,
+                marginRight: 0,
+                marginBottom: isEyeMode ? '10px' : '16px',
                 flexShrink: 0,
                 width: '100%',
                 position: 'relative',
                 zIndex: 5,
                 padding: 0,
-                margin: 0,
               }}
             >
               {Object.keys(modes).map((mKey, mIdx) => {
@@ -3645,10 +3714,13 @@ export default function App() {
                       style={{
                         borderRadius: '50%',
                         transform: 'scale(1.0)',
-                        transition: 'box-shadow 0.25s ease, transform 0.25s ease',
-                        boxShadow: isSelected 
-                          ? `0 0 0 2px ${modeAccent}` 
-                          : '0 0 0 0px transparent',
+                        transition: 'box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease',
+                        boxShadow: isEyeMode
+                          ? 'none'
+                          : (isSelected ? `0 0 0 2px ${modeAccent}` : '0 0 0 0px transparent'),
+                        border: isEyeMode
+                          ? (isSelected ? `2px solid ${modeAccent}` : '2px solid transparent')
+                          : undefined,
                         position: 'relative',
                       }}
                     >
@@ -4405,7 +4477,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.3.2
+                    v1.3.3
                   </span>
                 </div>
 
@@ -4420,7 +4492,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.3.2)');
+                        setUpdateStatusText('You are running the latest version (v1.3.3)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4458,7 +4530,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.3.2
+                Overdesk Nexus v1.3.3
               </div>
             </div>
           </div>
@@ -5159,6 +5231,7 @@ export default function App() {
         <div style={{ display: activeApp === 'calendar' ? 'contents' : 'none' }}>
           <FxCalendar
             isLight={isLight}
+            isEyeMode={isEyeMode}
             minimized={minimized}
             onBackToChecklist={() => setActiveApp('checklist')}
             settingsPanelOpen={calendarSettingsOpen}

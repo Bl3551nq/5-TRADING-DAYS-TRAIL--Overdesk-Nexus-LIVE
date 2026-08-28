@@ -273,6 +273,7 @@ const playFallbackSynth = (profile: string) => {
 
 interface FxCalendarProps {
   isLight: boolean;
+  isEyeMode?: boolean;
   scale?: number;
   onBackToChecklist?: () => void;
   settingsPanelOpen?: boolean;
@@ -419,6 +420,7 @@ const getEventDescription = (e: FxEvent): string => {
 
 export default function FxCalendar({ 
   isLight, 
+  isEyeMode = false,
   onBackToChecklist,
   settingsPanelOpen: externalSettingsPanelOpen,
   setSettingsPanelOpen: externalSetSettingsPanelOpen,
@@ -1802,9 +1804,11 @@ export default function FxCalendar({
       <div ref={scrollContainerRef} className="custom-scroll no-drag" style={{
         flex: 1,
         overflowY: 'auto',
+        overflowX: 'hidden',
         paddingRight: '4px',
         touchAction: 'pan-y',
         pointerEvents: 'auto',
+        width: '100%',
       }}>
         <AnimatePresence mode="wait">
           <motion.div
@@ -1813,7 +1817,7 @@ export default function FxCalendar({
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -12 }}
             transition={{ duration: 0.22, ease: "easeInOut" }}
-            style={{ minHeight: '100%', display: 'flex', flexDirection: 'column' }}
+            style={{ minHeight: '100%', width: '100%', display: 'flex', flexDirection: 'column', overflowX: 'hidden' }}
           >
             {visibleEvents.length === 0 ? (
               <div style={{
@@ -1841,7 +1845,6 @@ export default function FxCalendar({
                   return (
                     <motion.div 
                       key={eventId}
-                      layout
                       initial={{ opacity: 0, y: 15 }}
                       animate={{
                         opacity: 1,
@@ -1865,7 +1868,9 @@ export default function FxCalendar({
                         padding: '6px 0',
                         alignItems: 'stretch',
                         transformOrigin: 'left center',
-                        position: 'relative'
+                        position: 'relative',
+                        width: '100%',
+                        boxSizing: 'border-box',
                       }}
                     >
                       {/* Left Column: Time & PM/AM */}
