@@ -1410,8 +1410,8 @@ export default function FxCalendar({
       borderRadius: '0',
     }}>
       
-      {/* SideRays lighting effect for app 2 in dark mode */}
-      {!isLight && (
+      {/* SideRays lighting effect for app 2 in dark mode (disabled in eye mode) */}
+      {!isLight && !isEyeMode && (
         <SideRays
           speed={1.5}
           rayColor1="#a855f7"
@@ -1966,20 +1966,25 @@ export default function FxCalendar({
                         paddingRight: '1px'
                       }}>
                         <motion.div
+                          className="fx-event-card"
                           style={{
-                            background: isLight 
-                              ? 'linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(241, 245, 249, 0.65) 100%)' 
-                              : 'linear-gradient(135deg, rgba(23, 21, 56, 0.5) 0%, rgba(13, 11, 33, 0.7) 100%)',
-                            backdropFilter: 'blur(16px)',
-                            WebkitBackdropFilter: 'blur(16px)',
-                            border: isLight 
-                              ? '1px solid rgba(255, 255, 255, 0.8)' 
-                              : '1px solid rgba(255, 255, 255, 0.03)',
+                            background: isEyeMode
+                              ? 'transparent'
+                              : (isLight 
+                                ? 'linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(241, 245, 249, 0.65) 100%)' 
+                                : 'linear-gradient(135deg, rgba(23, 21, 56, 0.5) 0%, rgba(13, 11, 33, 0.7) 100%)'),
+                            backdropFilter: isEyeMode ? 'none' : 'blur(16px)',
+                            WebkitBackdropFilter: isEyeMode ? 'none' : 'blur(16px)',
+                            border: isEyeMode
+                              ? (isLight ? '1px solid rgba(0, 0, 0, 0.08)' : '1px solid rgba(255, 255, 255, 0.08)')
+                              : (isLight 
+                                ? '1px solid rgba(255, 255, 255, 0.8)' 
+                                : '1px solid rgba(255, 255, 255, 0.03)'),
                             borderRadius: '12px',
                             padding: '8px 11px',
-                            boxShadow: isLight 
+                            boxShadow: isEyeMode ? 'none' : (isLight 
                               ? '0 4px 14px rgba(0, 0, 0, 0.02), inset 0 1px 1px rgba(255,255,255,0.8)' 
-                              : '0 6px 20px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255,255,255,0.05)',
+                              : '0 6px 20px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255,255,255,0.05)'),
                             display: 'flex',
                             flexDirection: 'column',
                             gap: '4px',
@@ -1987,13 +1992,18 @@ export default function FxCalendar({
                             transformOrigin: 'left center'
                           }}
                           whileHover={{ 
-                            y: -1,
-                            boxShadow: isLight
+                            y: isEyeMode ? 0 : -1,
+                            backgroundColor: isEyeMode 
+                              ? (isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.06)') 
+                              : undefined,
+                            boxShadow: isEyeMode ? 'none' : (isLight
                               ? '0 6px 16px rgba(0,0,0,0.04), inset 0 1px 1px rgba(255,255,255,0.9)'
-                              : '0 8px 20px rgba(0, 130, 255, 0.1), inset 0 1px 1px rgba(255,255,255,0.08)',
-                            borderColor: isLight
-                              ? 'rgba(255, 255, 255, 0.95)'
-                              : 'rgba(255, 255, 255, 0.05)'
+                              : '0 8px 20px rgba(0, 130, 255, 0.1), inset 0 1px 1px rgba(255,255,255,0.08)'),
+                            borderColor: isEyeMode
+                              ? (isLight ? 'rgba(0, 0, 0, 0.14)' : 'rgba(255, 255, 255, 0.15)')
+                              : (isLight
+                                ? 'rgba(255, 255, 255, 0.95)'
+                                : 'rgba(255, 255, 255, 0.05)')
                           }}
                         >
                           {/* Title & Badge Header line */}

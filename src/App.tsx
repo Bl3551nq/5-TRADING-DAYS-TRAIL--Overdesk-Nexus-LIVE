@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import overdeskLogo from './logo.svg';
 import FxCalendar, { playSynthSound } from './components/FxCalendar';
 import { MinimizedReminderView } from './components/MinimizedReminderView';
@@ -647,6 +648,35 @@ export default function App() {
       return true;
     }
   });
+
+  // Full Mode State: Displays individual checklist items occupying the mode in big fonts with Next/Back navigation
+  const [fullMode, setFullMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('fm_full_mode') === '1';
+    } catch (e) {
+      return false;
+    }
+  });
+
+  const [fullModeIndices, setFullModeIndices] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('fm_full_mode_indices');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {};
+  });
+
+  const handleFullModeChange = (val: boolean) => {
+    setFullMode(val);
+    localStorage.setItem('fm_full_mode', val ? '1' : '0');
+    if (val) {
+      setFullModeIndices((prev) => {
+        const next = { ...prev, [currentMode]: prev[currentMode] ?? 0 };
+        localStorage.setItem('fm_full_mode_indices', JSON.stringify(next));
+        return next;
+      });
+    }
+  };
 
   const [isChecklistScrolling, setIsChecklistScrolling] = useState(false);
   const checklistScrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -1447,6 +1477,34 @@ export default function App() {
     } catch (e) {}
     return {};
   });
+
+  const setFullModeIndexForCurrentMode = (newIdx: number) => {
+    const total = modes[currentMode]?.options.length || 0;
+    const clamped = Math.max(0, Math.min(total - 1, newIdx));
+    const nextObj = { ...fullModeIndices, [currentMode]: clamped };
+    setFullModeIndices(nextObj);
+    localStorage.setItem('fm_full_mode_indices', JSON.stringify(nextObj));
+  };
+
+  const currentFullIdx = Math.min(
+    Math.max(0, fullModeIndices[currentMode] || 0),
+    Math.max(0, (modes[currentMode]?.options.length || 1) - 1)
+  );
+
+  const handleFullModePrev = () => {
+    if (currentFullIdx > 0) {
+      setFullModeIndexForCurrentMode(currentFullIdx - 1);
+      playSoundChime('check');
+    }
+  };
+
+  const handleFullModeNext = () => {
+    const total = modes[currentMode]?.options.length || 0;
+    if (currentFullIdx < total - 1) {
+      setFullModeIndexForCurrentMode(currentFullIdx + 1);
+      playSoundChime('check');
+    }
+  };
 
   // Scale tracking (from localStorage)
   const [scale, setScale] = useState<number>(() => {
@@ -2502,6 +2560,13 @@ export default function App() {
     setEditingTitle(false);
     setEditingItemIdx(null);
     setCurrentMode(mode);
+    if (fullMode) {
+      setFullModeIndices((prev) => {
+        const next = { ...prev, [mode]: prev[mode] ?? 0 };
+        localStorage.setItem('fm_full_mode_indices', JSON.stringify(next));
+        return next;
+      });
+    }
     if (editMode) {
       // Toggle mode visual configuration overlay
       setPickerTargetMode(mode);
@@ -2616,6 +2681,8 @@ export default function App() {
       });
 
       setSelections(emptyChecklists);
+      setFullModeIndices({});
+      localStorage.removeItem('fm_full_mode_indices');
       setModes(resetModes);
       localStorage.setItem('fm_modes', JSON.stringify(resetModes));
       localStorage.setItem('fm_state_ver', '5.0');
@@ -2624,6 +2691,13 @@ export default function App() {
       const nextSelections = { ...selections, [currentMode]: [] };
       setSelections(nextSelections);
       localStorage.setItem('fm_sel_' + currentMode, JSON.stringify([]));
+
+      setFullModeIndices((prev) => {
+        const next = { ...prev };
+        delete next[currentMode];
+        localStorage.setItem('fm_full_mode_indices', JSON.stringify(next));
+        return next;
+      });
 
       const base = modes[currentMode]?.baseOptions || DEFAULT_MODES[currentMode]?.options || modes[currentMode]?.options || [];
       const updatedModes = {
@@ -2721,22 +2795,35 @@ export default function App() {
 
     setSelections((prev) => ({ ...prev, [currentMode]: reassignedChecked }));
     localStorage.setItem('fm_sel_' + currentMode, JSON.stringify(reassignedChecked));
+
+    if (fullModeIndices[currentMode] !== undefined) {
+      const maxIdx = Math.max(0, updatedOptions.length - 1);
+      const currIdx = fullModeIndices[currentMode] || 0;
+      if (currIdx > maxIdx) {
+        setFullModeIndexForCurrentMode(maxIdx);
+      }
+    }
   };
 
   // ── Add dynamic item option checklist ──
   const addNewItemOption = () => {
-    const listCopy = [...modes[currentMode].options, 'New option'];
-    const baseCopy = [...(modes[currentMode].baseOptions || modes[currentMode].options), 'New option'];
-    setModes((prev) => ({
-      ...prev,
+    const listCopy = [...(modes[currentMode]?.options || []), 'New option'];
+    const baseCopy = [...(modes[currentMode]?.baseOptions || modes[currentMode]?.options || []), 'New option'];
+    const updatedModes = {
+      ...modes,
       [currentMode]: {
-        ...prev[currentMode],
+        ...modes[currentMode],
         options: listCopy,
         baseOptions: baseCopy,
       },
-    }));
+    };
+    setModes(updatedModes);
+    localStorage.setItem('fm_modes', JSON.stringify(updatedModes));
 
     const nextIdx = listCopy.length - 1;
+    if (fullMode) {
+      setFullModeIndexForCurrentMode(nextIdx);
+    }
     setEditingItemIdx(nextIdx);
     setEditingItemValue('New option');
     setTimeout(() => {
@@ -2999,11 +3086,62 @@ export default function App() {
     }
   };
 
+  // ── Mode Progress Helper: calculates accurate progress for both active and background modes ──
+  const getModeProgress = (modeKey: string) => {
+    const totalOptions = modes[modeKey]?.options.length || 0;
+    if (totalOptions === 0) {
+      return { checkedCount: 0, totalCount: 0, pct: 0, hasLiquidFill: false };
+    }
+
+    if (fullMode) {
+      // In Full Mode:
+      if (modeKey === currentMode) {
+        const fullIdx = currentFullIdx;
+        const checkedCount = fullIdx + 1;
+        const pct = Math.min(1, Math.max(0, checkedCount / totalOptions));
+        return { checkedCount, totalCount: totalOptions, pct, hasLiquidFill: true };
+      }
+
+      // Other mode in Full Mode:
+      if (fullModeIndices[modeKey] !== undefined) {
+        const fullIdx = Math.min(Math.max(0, fullModeIndices[modeKey]), totalOptions - 1);
+        const checkedCount = fullIdx + 1;
+        const pct = Math.min(1, Math.max(0, checkedCount / totalOptions));
+        return { checkedCount, totalCount: totalOptions, pct, hasLiquidFill: true };
+      }
+
+      // If other mode has checked items from checklist mode:
+      const selCount = selections[modeKey]?.length || 0;
+      if (selCount > 0) {
+        const pct = Math.min(1, Math.max(0, selCount / totalOptions));
+        return { checkedCount: selCount, totalCount: totalOptions, pct, hasLiquidFill: true };
+      }
+
+      return { checkedCount: 0, totalCount: totalOptions, pct: 0, hasLiquidFill: false };
+    } else {
+      // In Checklist Mode:
+      const selCount = selections[modeKey]?.length || 0;
+      if (selCount > 0) {
+        const pct = Math.min(1, Math.max(0, selCount / totalOptions));
+        return { checkedCount: selCount, totalCount: totalOptions, pct, hasLiquidFill: true };
+      }
+
+      // If other mode was begun in Full Mode:
+      if (fullModeIndices[modeKey] !== undefined && fullModeIndices[modeKey] > 0) {
+        const fullIdx = Math.min(Math.max(0, fullModeIndices[modeKey]), totalOptions - 1);
+        const checkedCount = fullIdx + 1;
+        const pct = Math.min(1, Math.max(0, checkedCount / totalOptions));
+        return { checkedCount, totalCount: totalOptions, pct, hasLiquidFill: true };
+      }
+
+      return { checkedCount: 0, totalCount: totalOptions, pct: 0, hasLiquidFill: false };
+    }
+  };
+
   // ── Render Helpers: Liquid Wave Path Calculation ──
   const compileLiquidWaveData = (modeKey: string) => {
-    const totalOptions = modes[modeKey]?.options.length || 0;
-    const checkedOptions = selections[modeKey]?.length || 0;
-    const pct = totalOptions > 0 ? checkedOptions / totalOptions : 0;
+    const progress = getModeProgress(modeKey);
+    const pct = progress.pct;
 
     const accentRaw = modes[modeKey]?.accent || 'rgba(110,0,210,0.9)';
     const m = accentRaw.match(/[\d.]+/g) || ['110', '0', '210'];
@@ -3033,6 +3171,7 @@ export default function App() {
 
     return {
       pct,
+      hasLiquidFill: progress.hasLiquidFill,
       baseColor,
       gradientHigh,
       waterY,
@@ -3628,9 +3767,9 @@ export default function App() {
               }}
             >
               {Object.keys(modes).map((mKey, mIdx) => {
-                const hasLiquidFill = selections[mKey]?.length > 0;
-                const isSelected = mKey === currentMode;
                 const waveParams = compileLiquidWaveData(mKey);
+                const hasLiquidFill = waveParams.hasLiquidFill;
+                const isSelected = mKey === currentMode;
                 const modeAccent = modes[mKey]?.accent || 'var(--accent)';
 
                 let translateX = 0;
@@ -4000,6 +4139,20 @@ export default function App() {
                     { label: 'x0.7', onClick: () => handleScaleChange(0.7) },
                   ]}
                   activeIndex={[2, 1.5, 1.2, 1, 0.9, 0.8, 0.7].findIndex((v) => Math.abs(scale - v) < 0.01)}
+                  particleCount={12}
+                  animationTime={450}
+                />
+              </div>
+
+              {/* Display Mode Setting: Checklist vs Full Mode */}
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>Display Mode</span>
+                <GooeyNav
+                  items={[
+                    { label: 'Checklist', onClick: () => handleFullModeChange(false) },
+                    { label: 'Full Mode', onClick: () => handleFullModeChange(true) },
+                  ]}
+                  activeIndex={fullMode ? 1 : 0}
                   particleCount={12}
                   animationTime={450}
                 />
@@ -4477,7 +4630,7 @@ export default function App() {
                     Software Update
                   </span>
                   <span style={{ fontSize: '9.5px', fontWeight: '700', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.65)' }}>
-                    v1.3.3
+                    v1.3.4
                   </span>
                 </div>
 
@@ -4492,7 +4645,7 @@ export default function App() {
                       setUpdateStatusText('Checking for updates...');
                       setTimeout(() => {
                         setCheckingUpdate(false);
-                        setUpdateStatusText('You are running the latest version (v1.3.3)');
+                        setUpdateStatusText('You are running the latest version (v1.3.4)');
                         setTimeout(() => setUpdateStatusText(''), 4000);
                       }, 1000);
                     }
@@ -4530,7 +4683,7 @@ export default function App() {
 
               {/* Version Footer */}
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', paddingTop: '8px', borderTop: '1px solid var(--divider)', opacity: 0.5, fontSize: '9px', fontWeight: '600', color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)' }}>
-                Overdesk Nexus v1.3.3
+                Overdesk Nexus v1.3.4
               </div>
             </div>
           </div>
@@ -4915,7 +5068,7 @@ export default function App() {
             )
           )}
         </div>
-        <div className="title-wrap">
+        <div className="title-wrap" style={fullMode ? { justifyContent: 'center', textAlign: 'center' } : undefined}>
           {editingTitle ? (
             <input
               ref={titleInputRef}
@@ -4925,11 +5078,12 @@ export default function App() {
                 whiteSpace: 'nowrap',
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
-                fontSize: titleInputValue.length > 22 ? '18px' : titleInputValue.length > 15 ? '21px' : '25px',
+                fontSize: '24px',
                 width: '100%',
                 flex: 1,
                 minWidth: 0,
                 boxSizing: 'border-box',
+                textAlign: fullMode ? 'center' : 'left',
               }}
               type="text"
               value={titleInputValue}
@@ -4940,10 +5094,21 @@ export default function App() {
               }}
             />
           ) : (
-            <div className={`title-container-editable ${editMode ? 'can-edit' : ''}`} style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: 0, overflow: 'hidden' }}>
+            <div
+              className={`title-container-editable ${editMode ? 'can-edit' : ''}`}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: fullMode ? 'center' : 'flex-start',
+                gap: '6px',
+                flex: fullMode ? '0 1 100%' : 1,
+                minWidth: 0,
+                overflow: 'hidden',
+                textAlign: fullMode ? 'center' : 'left',
+              }}
+            >
               {(() => {
                 const titleStr = modes[currentMode]?.title || 'Precision';
-                const dynamicFontSize = titleStr.length > 22 ? '18px' : titleStr.length > 15 ? '21px' : '25px';
                 return (
                   <h1
                     className={`title ${editMode ? 'editable' : ''}`}
@@ -4963,9 +5128,10 @@ export default function App() {
                       lineHeight: '1.2',
                       paddingBottom: '2px',
                       display: 'block',
-                      fontSize: dynamicFontSize,
-                      flex: 1,
+                      fontSize: '24px',
+                      flex: fullMode ? '0 1 auto' : 1,
                       minWidth: 0,
+                      textAlign: fullMode ? 'center' : 'left',
                     }}
                   >
                     {renderFormattedMarkdown(titleStr, 800)}
@@ -5005,9 +5171,11 @@ export default function App() {
               )}
             </div>
           )}
-          <span className="mode-counter" id="mode-counter">
-            {totalModeChecked}/{totalModeOptions}
-          </span>
+          {!fullMode && (
+            <span className="mode-counter" id="mode-counter">
+              {`${totalModeChecked}/${totalModeOptions}`}
+            </span>
+          )}
         </div>
 
         <div className="divider"></div>
@@ -5016,6 +5184,327 @@ export default function App() {
         <div className="card-body">
           {(() => {
             const activeScrollAreaHeight = 176 + expandedExtraHeight;
+
+            if (fullMode) {
+              const currentItemText = modes[currentMode]?.options[currentFullIdx] || '';
+              const isMultiLine = currentItemText.includes('\n') || currentItemText.length > 35;
+              const dynamicFullFontSize = isMultiLine ? '26px' : '34px';
+
+              const handleFullModeTextChange = (newVal: string) => {
+                const listCopy = [...(modes[currentMode]?.options || [])];
+                listCopy[currentFullIdx] = newVal;
+
+                const baseCopy = [...(modes[currentMode]?.baseOptions || modes[currentMode]?.options || [])];
+                if (baseCopy[currentFullIdx] !== undefined) {
+                  baseCopy[currentFullIdx] = newVal;
+                }
+
+                const updatedModes = {
+                  ...modes,
+                  [currentMode]: {
+                    ...modes[currentMode],
+                    options: listCopy,
+                    baseOptions: baseCopy,
+                  },
+                };
+                setModes(updatedModes);
+                localStorage.setItem('fm_modes', JSON.stringify(updatedModes));
+              };
+
+              return (
+                <div
+                  className="full-mode-wrapper"
+                  style={{
+                    height: `${activeScrollAreaHeight}px`,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    gap: '6px',
+                    position: 'relative',
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    padding: '0',
+                  }}
+                >
+                  {/* Text area without container frame */}
+                  <div
+                    className="full-mode-card"
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      width: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      padding: 0,
+                      background: 'transparent',
+                      border: 'none',
+                      boxShadow: 'none',
+                      backdropFilter: 'none',
+                      WebkitBackdropFilter: 'none',
+                      position: 'relative',
+                      overflow: 'hidden',
+                      boxSizing: 'border-box',
+                    }}
+                  >
+                    {totalModeOptions === 0 ? (
+                      <div style={{ opacity: 0.5, fontSize: '16px', fontStyle: 'italic', margin: 'auto' }}>
+                        No items in this mode
+                      </div>
+                    ) : editMode ? (
+                      /* DIRECT INLINE EDITING IN EDIT MODE */
+                      <div
+                        style={{
+                          width: '100%',
+                          flex: 1,
+                          minHeight: 0,
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '8px',
+                          boxSizing: 'border-box',
+                          padding: '4px 0',
+                        }}
+                      >
+                        <textarea
+                          ref={listInputRef as any}
+                          className="full-mode-textarea"
+                          value={currentItemText}
+                          onChange={(e) => handleFullModeTextChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            e.stopPropagation();
+                            if (e.key === 'Escape') {
+                              (e.target as HTMLElement).blur();
+                            }
+                          }}
+                          placeholder="Type item text..."
+                          style={{
+                            width: '100%',
+                            flex: 1,
+                            minHeight: '80px',
+                            maxHeight: '140px',
+                            fontSize: dynamicFullFontSize,
+                            fontFamily: "'Google Sans', 'Google Sans Flex', 'Product Sans', 'Plus Jakarta Sans', 'Open Sans', sans-serif",
+                            fontWeight: 800,
+                            lineHeight: 1.25,
+                            letterSpacing: '-0.025em',
+                            borderRadius: '12px',
+                            padding: '8px 10px',
+                            background: isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(15, 15, 20, 0.75)',
+                            border: '2px solid var(--accent)',
+                            color: 'var(--text)',
+                            resize: 'none',
+                            textAlign: 'center',
+                            boxSizing: 'border-box',
+                            outline: 'none',
+                            display: 'block',
+                            whiteSpace: 'pre-wrap',
+                            overflowY: 'auto',
+                            scrollbarWidth: 'none',
+                            msOverflowStyle: 'none',
+                          }}
+                        />
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', justifyContent: 'center', userSelect: 'none' }}>
+                          {totalModeOptions > 1 && (
+                            <button
+                              onClick={(e) => deleteItemOption(e, currentFullIdx)}
+                              style={{
+                                width: '34px',
+                                height: '34px',
+                                borderRadius: '50%',
+                                background: 'rgba(255, 70, 70, 0.18)',
+                                border: '1px solid rgba(255, 70, 70, 0.35)',
+                                color: '#ff5252',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                                padding: 0,
+                                transition: 'all 0.18s ease',
+                              }}
+                              title="Delete current option"
+                            >
+                              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                <line x1="10" y1="11" x2="10" y2="17" />
+                                <line x1="14" y1="11" x2="14" y2="17" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      /* DISPLAY MODE (LARGE FORMATTED MARKDOWN TEXT FLOATING DIRECTLY) */
+                      <AnimatePresence mode="wait">
+                        <motion.div
+                          key={`${currentMode}_${currentFullIdx}`}
+                          initial={{ opacity: 0, y: 6, scale: 0.97 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                          transition={{ duration: 0.16, ease: 'easeOut' }}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            overflowY: 'auto',
+                            scrollbarWidth: 'none',
+                            msOverflowStyle: 'none',
+                            padding: '8px 4px',
+                            boxSizing: 'border-box',
+                          }}
+                        >
+                          <div
+                            className="full-mode-text"
+                            onDoubleClick={() => setEditMode(true)}
+                            style={{
+                              fontSize: dynamicFullFontSize,
+                              fontFamily: "'Google Sans', 'Google Sans Flex', 'Product Sans', 'Plus Jakarta Sans', 'Open Sans', sans-serif",
+                              fontWeight: 800,
+                              lineHeight: 1.25,
+                              color: 'var(--text)',
+                              letterSpacing: '-0.025em',
+                              textAlign: 'center',
+                              wordBreak: 'break-word',
+                              whiteSpace: 'pre-wrap',
+                              maxWidth: '100%',
+                              cursor: 'default',
+                              userSelect: 'text',
+                              scrollbarWidth: 'none',
+                              msOverflowStyle: 'none',
+                              display: 'block',
+                              margin: 'auto 0',
+                              padding: '4px 2px',
+                            }}
+                            title="Double-click to edit"
+                          >
+                            {renderFormattedMarkdown(currentItemText, 900)}
+                          </div>
+                        </motion.div>
+                      </AnimatePresence>
+                    )}
+                  </div>
+
+                  {/* Bottom Navigation: Round Buttons with Icons */}
+                  <div
+                    className="full-mode-nav"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '12px',
+                      width: '100%',
+                      userSelect: 'none',
+                      boxSizing: 'border-box',
+                      paddingTop: '2px',
+                    }}
+                  >
+                    {/* Back Round Button */}
+                    <button
+                      className="full-mode-btn full-mode-back"
+                      onClick={handleFullModePrev}
+                      disabled={currentFullIdx <= 0}
+                      style={{
+                        width: '34px',
+                        height: '34px',
+                        minWidth: '34px',
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 0,
+                        background: isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.08)',
+                        border: '1px solid ' + (isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.14)'),
+                        color: isLight ? '#0f172a' : '#ffffff',
+                        cursor: currentFullIdx <= 0 ? 'default' : 'pointer',
+                        opacity: currentFullIdx <= 0 ? 0.3 : 1,
+                        transition: 'all 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+                      }}
+                      title="Previous item"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="15 18 9 12 15 6" />
+                      </svg>
+                    </button>
+
+                    {/* Step Pill */}
+                    <div
+                      className="full-mode-step-pill"
+                      style={{
+                        padding: '4px 12px',
+                        borderRadius: '999px',
+                        background: isLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.06)',
+                        border: '1px solid ' + (isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.1)'),
+                        color: isLight ? 'rgba(0,0,0,0.7)' : 'rgba(255, 255, 255, 0.8)',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        letterSpacing: '0.04em',
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                      }}
+                    >
+                      <span>{totalModeOptions > 0 ? currentFullIdx + 1 : 0}</span>
+                      <span style={{ opacity: 0.35 }}>/</span>
+                      <span>{totalModeOptions}</span>
+                    </div>
+
+                    {/* Next Round Button */}
+                    <button
+                      className="full-mode-btn full-mode-next"
+                      onClick={handleFullModeNext}
+                      disabled={currentFullIdx >= totalModeOptions - 1}
+                      style={{
+                        width: '34px',
+                        height: '34px',
+                        minWidth: '34px',
+                        borderRadius: '50%',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        padding: 0,
+                        background: currentFullIdx >= totalModeOptions - 1
+                          ? (isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.08)')
+                          : 'var(--accent)',
+                        border: currentFullIdx >= totalModeOptions - 1
+                          ? '1px solid ' + (isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.14)')
+                          : '1px solid var(--accent)',
+                        color: currentFullIdx >= totalModeOptions - 1
+                          ? (isLight ? '#0f172a' : '#ffffff')
+                          : '#ffffff',
+                        cursor: currentFullIdx >= totalModeOptions - 1 ? 'default' : 'pointer',
+                        opacity: currentFullIdx >= totalModeOptions - 1 ? 0.3 : 1,
+                        transition: 'all 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+                      }}
+                      title="Next item"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Add option button if in edit mode */}
+                  {editMode && (
+                    <button
+                      className="add-btn"
+                      style={{ display: 'flex', marginTop: '2px', padding: '6px' }}
+                      onClick={addNewItemOption}
+                    >
+                      <svg viewBox="0 0 24 24">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                      </svg>
+                      Add option
+                    </button>
+                  )}
+                </div>
+              );
+            }
 
             return (
               <div
