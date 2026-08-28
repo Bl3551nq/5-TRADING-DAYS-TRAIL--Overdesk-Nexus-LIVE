@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
+import { renderFormattedMarkdown, stripMarkdown, sliceFormattedMarkdown } from '../utils/textFormatter';
 
 interface MinimizedReminderViewProps {
   reminderText: string;
@@ -30,13 +31,14 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
   pauseDuration = 30000,
   getReminderFontSize,
 }) => {
-  const [displayText, setDisplayText] = useState('');
+  const plainText = stripMarkdown(text);
+  const [charCount, setCharCount] = useState(0);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
 
   // Reset when target text changes
   useEffect(() => {
-    setDisplayText('');
+    setCharCount(0);
     setIsDeleting(false);
     setIsPaused(false);
   }, [text]);
@@ -50,17 +52,17 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
         setIsDeleting(true);
       }, pauseDuration);
     } else if (isDeleting) {
-      if (displayText.length > 0) {
+      if (charCount > 0) {
         timeout = setTimeout(() => {
-          setDisplayText(text.substring(0, displayText.length - 1));
+          setCharCount((prev) => prev - 1);
         }, deleteSpeed);
       } else {
         setIsDeleting(false);
       }
     } else {
-      if (displayText.length < text.length) {
+      if (charCount < plainText.length) {
         timeout = setTimeout(() => {
-          setDisplayText(text.substring(0, displayText.length + 1));
+          setCharCount((prev) => prev + 1);
         }, speed);
       } else {
         setIsPaused(true);
@@ -68,9 +70,10 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
     }
 
     return () => clearTimeout(timeout);
-  }, [displayText, isDeleting, isPaused, text, speed, deleteSpeed, pauseDuration]);
+  }, [charCount, isDeleting, isPaused, plainText, speed, deleteSpeed, pauseDuration]);
 
   const fontSize = getReminderFontSize(text);
+  const currentFormattedSlice = sliceFormattedMarkdown(text, charCount);
 
   return (
     <div
@@ -101,7 +104,7 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
           pointerEvents: 'none',
         }}
       >
-        {text || 'A'} |
+        {renderFormattedMarkdown(text || 'A')} |
       </span>
 
       {/* Visible typing element */}
@@ -122,7 +125,7 @@ const TypewriterText: React.FC<TypewriterTextProps> = ({
         }}
       >
         <span style={{ position: 'relative', display: 'inline-block' }}>
-          {displayText}
+          {renderFormattedMarkdown(currentFormattedSlice)}
           <motion.span
             animate={{ opacity: [1, 0] }}
             transition={{
@@ -362,7 +365,7 @@ export const MinimizedReminderView: React.FC<MinimizedReminderViewProps> = ({
                   justifyContent: 'center',
                 }}
               >
-                {reminderText}
+                {renderFormattedMarkdown(reminderText)}
               </span>
             )}
           </div>

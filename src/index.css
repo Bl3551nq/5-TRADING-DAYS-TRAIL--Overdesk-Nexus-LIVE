@@ -848,6 +848,40 @@ body.editing .icon-btn::after {
   color: #ffffff;
   text-shadow: 0 1px 6px rgba(0, 0, 0, 0.95), 0 0 10px rgba(0, 0, 0, 0.7);
 }
+.formatted-bold {
+  font-weight: 900 !important;
+  color: #ffffff;
+  letter-spacing: 0.02em;
+  text-shadow: 0 0 1px rgba(255, 255, 255, 0.4), 0 1px 8px rgba(0, 0, 0, 0.9);
+}
+.card.light .formatted-bold {
+  font-weight: 900 !important;
+  color: #020617;
+  text-shadow: 0 0 1px rgba(0, 0, 0, 0.35);
+}
+.formatted-italic {
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: 0.015em;
+  opacity: 0.95;
+  display: inline-block;
+  transform: skewX(-4deg);
+}
+.card.light .formatted-italic {
+  color: #0f172a;
+}
+.option.dragging-option {
+  opacity: 0.45 !important;
+  border: 1px dashed var(--accent, #38bdf8) !important;
+  background: rgba(56, 189, 248, 0.15) !important;
+  transform: scale(0.98);
+}
+.option.drag-over-target {
+  border-color: var(--accent, #38bdf8) !important;
+  box-shadow: 0 0 0 2px var(--accent, #38bdf8), 0 4px 14px rgba(0, 0, 0, 0.45) !important;
+  background: rgba(56, 189, 248, 0.22) !important;
+  transform: scale(1.02);
+}
 .card.light .opt-text {
   color: #0f172a;
   text-shadow: 0 1px 4px rgba(255, 255, 255, 0.95), 0 0 8px rgba(255, 255, 255, 0.85);

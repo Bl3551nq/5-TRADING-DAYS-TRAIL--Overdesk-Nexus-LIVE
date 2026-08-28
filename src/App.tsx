@@ -4,6 +4,7 @@ import FxCalendar, { playSynthSound } from './components/FxCalendar';
 import { MinimizedReminderView } from './components/MinimizedReminderView';
 import { Glass } from './components/Glass';
 import GooeyNav, { triggerGooeyParticles } from './components/GooeyNav';
+import { renderFormattedMarkdown } from './utils/textFormatter';
 
 import wallpaperGokuBack from './assets/images/goku_back_focus_1785507323174.jpg';
 import wallpaperBullBear from './assets/images/bull_bear_chart_1785507336627.jpg';
@@ -1343,6 +1344,7 @@ export default function App() {
   const [draggedModeIdx, setDraggedModeIdx] = useState<number | null>(null);
   const [dragOverModeIdx, setDragOverModeIdx] = useState<number | null>(null);
   const [draggedOptionIdx, setDraggedOptionIdx] = useState<number | null>(null);
+  const [dragOverOptionIdx, setDragOverOptionIdx] = useState<number | null>(null);
 
   // Modular Modes Storage
   const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
@@ -2107,6 +2109,9 @@ export default function App() {
 
   const handleScaleChange = (val: number) => {
     setScale(val);
+    try {
+      localStorage.setItem('fm_scale', String(val));
+    } catch (e) {}
     if (window.electronAPI) {
       window.electronAPI.scaleStart();
       setTimeout(() => {
@@ -3058,7 +3063,10 @@ export default function App() {
         onPointerMove={handleCardPointerMove}
         onPointerUp={handleCardPointerUp}
         onPointerCancel={handleCardPointerUp}
-        onDragStart={(e) => e.preventDefault()}
+        onDragStart={(e) => {
+          if ((e.target as HTMLElement).closest('.option, .mode-drag-handle, [draggable="true"]')) return;
+          e.preventDefault();
+        }}
         style={{
           transform: `translate(${translate.x}px, ${translate.y}px) scale(${isGripped ? 1.035 : 1})`,
           boxShadow: !licenseActive ? 'none' : (isGripped ? `0 20px 50px -5px ${modes[currentMode]?.soft || 'var(--accent-soft)'}, 0 8px 24px -2px rgba(0, 0, 0, 0.45)` : undefined),
@@ -3915,10 +3923,11 @@ export default function App() {
                     { label: 'x1.5', onClick: () => handleScaleChange(1.5) },
                     { label: 'x1.2', onClick: () => handleScaleChange(1.2) },
                     { label: 'x1', onClick: () => handleScaleChange(1) },
+                    { label: 'x0.9', onClick: () => handleScaleChange(0.9) },
+                    { label: 'x0.8', onClick: () => handleScaleChange(0.8) },
                     { label: 'x0.7', onClick: () => handleScaleChange(0.7) },
-                    { label: 'x0.5', onClick: () => handleScaleChange(0.5) },
                   ]}
-                  activeIndex={[2, 1.5, 1.2, 1, 0.7, 0.5].findIndex((v) => Math.abs(scale - v) < 0.01)}
+                  activeIndex={[2, 1.5, 1.2, 1, 0.9, 0.8, 0.7].findIndex((v) => Math.abs(scale - v) < 0.01)}
                   particleCount={12}
                   animationTime={450}
                 />
@@ -4887,7 +4896,7 @@ export default function App() {
                       minWidth: 0,
                     }}
                   >
-                    {titleStr}
+                    {renderFormattedMarkdown(titleStr, 800)}
                   </h1>
                 );
               })()}
@@ -4954,12 +4963,13 @@ export default function App() {
 
                 return (
                   <li
-                    className={`option ${isItemChecked ? 'selected' : ''} ${draggedOptionIdx === optionIdx ? 'dragging-option' : ''}`}
+                    className={`option ${isItemChecked ? 'selected' : ''} ${draggedOptionIdx === optionIdx ? 'dragging-option' : ''} ${dragOverOptionIdx === optionIdx && draggedOptionIdx !== optionIdx ? 'drag-over-target' : ''}`}
                     key={optionIdx}
                     onClick={() => handleOptionToggle(optionIdx)}
                     draggable={editMode}
                     onDragStart={(e) => {
                       if (!editMode) return;
+                      e.stopPropagation();
                       setDraggedOptionIdx(optionIdx);
                       e.dataTransfer.setData('text/plain', String(optionIdx));
                       e.dataTransfer.effectAllowed = 'move';
@@ -4967,18 +4977,34 @@ export default function App() {
                     onDragOver={(e) => {
                       if (!editMode) return;
                       e.preventDefault();
+                      e.stopPropagation();
                       e.dataTransfer.dropEffect = 'move';
+                      if (dragOverOptionIdx !== optionIdx) {
+                        setDragOverOptionIdx(optionIdx);
+                      }
+                    }}
+                    onDragLeave={(e) => {
+                      e.stopPropagation();
+                      if (dragOverOptionIdx === optionIdx) {
+                        setDragOverOptionIdx(null);
+                      }
                     }}
                     onDrop={(e) => {
                       if (!editMode) return;
                       e.preventDefault();
+                      e.stopPropagation();
                       const fromIdx = parseInt(e.dataTransfer.getData('text/plain'), 10);
                       if (!isNaN(fromIdx) && fromIdx !== optionIdx) {
                         moveOption(fromIdx, optionIdx);
                       }
                       setDraggedOptionIdx(null);
+                      setDragOverOptionIdx(null);
                     }}
-                    onDragEnd={() => setDraggedOptionIdx(null)}
+                    onDragEnd={(e) => {
+                      e.stopPropagation();
+                      setDraggedOptionIdx(null);
+                      setDragOverOptionIdx(null);
+                    }}
                     style={{ cursor: editMode ? 'grab' : 'pointer' }}
                   >
                     {/* Drag handle icon in edit mode */}
@@ -5028,7 +5054,7 @@ export default function App() {
                         }}
                       />
                     ) : (
-                      <span className="opt-text">{itemText}</span>
+                      <span className="opt-text">{renderFormattedMarkdown(itemText, 900)}</span>
                     )}
 
                     {/* Action reorder & delete buttons in edit mode */}
