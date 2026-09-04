@@ -1,7 +1,9 @@
 {
   "name": "5 DAYS TRAIL Overdesk Nexus LIVE",
-  "description": "Floating checklist designed for windows, featuring transparent background, custom scaling, light/dark themes, and automated updates.",
-  "requestFramePermissions": [],
+  "description": "Floating trading plan checklist and news calendar designed for Windows and Android APK, featuring customizable themes, speech copilot, and automated builds.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

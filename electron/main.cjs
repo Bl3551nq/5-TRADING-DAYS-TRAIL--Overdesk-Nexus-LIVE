@@ -18,6 +18,7 @@ if (!gotTheLock) {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       if (!mainWindow.isVisible()) mainWindow.show();
+      enforceAlwaysOnTop();
       mainWindow.focus();
     }
   });
@@ -39,6 +40,26 @@ let scaleCenterY = null;
 let lastTargetW = null;
 let lastTargetH = null;
 const configPath = path.join(app.getPath('userData'), 'app-config.json');
+
+// Helper to reliably enforce highest tier always-on-top overlay even over full screen games, browsers, and apps
+function enforceAlwaysOnTop() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    if (process.platform === 'darwin') {
+      mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+      mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    } else {
+      // 'screen-saver' or 'pop-up-menu' ensures it sits above fullscreen windows/browsers/games in Windows & Linux
+      mainWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+    }
+  } catch (e) {
+    try {
+      mainWindow.setAlwaysOnTop(true, 'pop-up-menu', 1);
+    } catch (err) {
+      mainWindow.setAlwaysOnTop(true);
+    }
+  }
+}
 
 // Helper to read config
 function readConfig() {
@@ -96,6 +117,7 @@ function createWindow() {
     resizable: true, // Set to true to bypass OS/Win32 boundary positioning restrictions
     maximizable: false, // Prevent maximize behavior to sustain checklist aspect ratio
     alwaysOnTop: true,
+    fullscreenable: false, // Maintain floating widget overlay behavior rather than full screen canvas
     skipTaskbar: false,
     show: !process.argv.includes('--hidden') && !process.argv.includes('-h'),
     webPreferences: {
@@ -124,6 +146,7 @@ function createWindow() {
   }
 
   mainWindow = new BrowserWindow(windowOptions);
+  enforceAlwaysOnTop();
 
   // Load from local static build or development server
   const isDev = !app.isPackaged;
@@ -134,6 +157,19 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
+
+  // Ensure window maintains highest overlay tier across window events
+  mainWindow.on('show', () => {
+    enforceAlwaysOnTop();
+  });
+
+  mainWindow.on('focus', () => {
+    enforceAlwaysOnTop();
+  });
+
+  mainWindow.on('blur', () => {
+    enforceAlwaysOnTop();
+  });
 
   // Save coordinates when window moves (only if NOT programmatic resize/drag scale)
   let moveTimeout;
@@ -184,6 +220,7 @@ function createWindow() {
 
   // Check for auto updates once window displays
   mainWindow.once('ready-to-show', () => {
+    enforceAlwaysOnTop();
     if (!isDev) {
       autoUpdater.checkForUpdatesAndNotify().catch(err => {
         console.error('Error checking for updates:', err);
@@ -226,6 +263,7 @@ function createTray() {
             mainWindow.hide();
           } else {
             mainWindow.show();
+            enforceAlwaysOnTop();
             mainWindow.focus();
           }
         } else {
@@ -252,6 +290,7 @@ function createTray() {
         mainWindow.hide();
       } else {
         mainWindow.show();
+        enforceAlwaysOnTop();
         mainWindow.focus();
       }
     } else {
@@ -354,6 +393,7 @@ app.whenReady().then(() => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       if (!mainWindow.isVisible()) mainWindow.show();
+      enforceAlwaysOnTop();
       mainWindow.focus();
     } else if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -1127,6 +1167,17 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
 ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
   if (mainWindow) {
     mainWindow.setIgnoreMouseEvents(ignore, options);
+  }
+});
+
+// Explicit IPC to enforce or reset always-on-top topmost level
+ipcMain.on('set-always-on-top', (event, flag = true) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (flag) {
+      enforceAlwaysOnTop();
+    } else {
+      mainWindow.setAlwaysOnTop(false);
+    }
   }
 });
 

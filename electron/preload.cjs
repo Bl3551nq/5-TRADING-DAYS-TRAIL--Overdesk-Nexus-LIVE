@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   scaleStart: () => ipcRenderer.send('scale-start'),
   scaleEnd: (scale) => ipcRenderer.send('scale-end', scale),
   setIgnoreMouseEvents: (ignore, options) => ipcRenderer.send('set-ignore-mouse-events', ignore, options),
+  setAlwaysOnTop: (flag = true) => ipcRenderer.send('set-always-on-top', flag),
   saveIcon: (dataUrl) => ipcRenderer.send('save-icon', dataUrl),
   checkForUpdates: () => ipcRenderer.send('check-for-updates'),
   installUpdate: () => ipcRenderer.send('install-update'),

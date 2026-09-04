@@ -1,0 +1,13 @@
+{
+	"appId": "com.overdesk.nexus",
+	"appName": "Overdesk Nexus",
+	"webDir": "dist",
+	"bundledWebRuntime": false,
+	"server": {
+		"androidScheme": "https"
+	},
+	"android": {
+		"allowMixedContent": true,
+		"backgroundColor": "#0c0f17"
+	}
+}

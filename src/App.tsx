@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import overdeskLogo from './logo.svg';
 import FxCalendar, { playSynthSound } from './components/FxCalendar';
@@ -6,6 +6,10 @@ import { MinimizedReminderView } from './components/MinimizedReminderView';
 import { Glass } from './components/Glass';
 import GooeyNav, { triggerGooeyParticles } from './components/GooeyNav';
 import { renderFormattedMarkdown } from './utils/textFormatter';
+import { GeminiVoiceEngine, GeminiVoiceResult } from './utils/geminiVoice';
+import { WhatNextView, WhatNextResultData, WhatNextPhase } from './components/WhatNextView';
+import { speakNaturalUtterance, getAvailableSystemVoices, UnifiedVoiceOption, unlockAudioContext, stopCurrentSpeech } from './lib/speechVoice';
+import { matchChecklistWithFuse } from './lib/checklistMatcher';
 
 import wallpaperGokuBack from './assets/images/goku_back_focus_1785507323174.jpg';
 import wallpaperBullBear from './assets/images/bull_bear_chart_1785507336627.jpg';
@@ -57,6 +61,7 @@ declare global {
       scaleStart: () => void;
       scaleEnd: (scale: number) => void;
       setIgnoreMouseEvents: (ignore: boolean, options?: { forward: boolean }) => void;
+      setAlwaysOnTop?: (flag?: boolean) => void;
       checkForUpdates?: () => void;
       installUpdate: () => void;
       onCheckingForUpdate?: (cb: () => void) => void;
@@ -594,6 +599,72 @@ export default function App() {
   });
   const [minimized, setMinimized] = useState<boolean>(false);
 
+  // Modular Modes Storage
+  const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
+    try {
+      const saved = localStorage.getItem('fm_modes');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          const mergedObj: Record<string, ModeDetail> = {};
+          Object.keys(parsed).forEach((k) => {
+            const def = DEFAULT_MODES[k];
+            const opts = Array.isArray(parsed[k]?.options) ? parsed[k].options : (def?.options || []);
+            const baseOpts = Array.isArray(parsed[k]?.baseOptions) && parsed[k].baseOptions.length > 0
+              ? parsed[k].baseOptions
+              : (def?.baseOptions || [...opts]);
+
+            mergedObj[k] = {
+              title: parsed[k]?.title || def?.title || k,
+              accent: parsed[k]?.accent || def?.accent || 'rgba(30, 140, 255, 0.9)',
+              soft: parsed[k]?.soft || def?.soft || 'rgba(60, 170, 255, 0.18)',
+              defaultAccent: parsed[k]?.defaultAccent || def?.defaultAccent || 'rgba(30, 140, 255, 0.9)',
+              defaultSoft: parsed[k]?.defaultSoft || def?.defaultSoft || 'rgba(60, 170, 255, 0.18)',
+              options: opts,
+              baseOptions: baseOpts,
+            };
+          });
+          if (Object.keys(mergedObj).length > 0) return mergedObj;
+        }
+      }
+    } catch (e) {}
+    return DEFAULT_MODES;
+  });
+
+  // Current selections for each mode
+  const [selections, setSelections] = useState<Record<string, number[]>>(() => {
+    const defaultSels: Record<string, number[]> = {};
+    try {
+      const savedModesStr = localStorage.getItem('fm_modes');
+      let modeKeys = Object.keys(DEFAULT_MODES);
+      if (savedModesStr) {
+        try {
+          const parsed = JSON.parse(savedModesStr);
+          if (parsed && typeof parsed === 'object') {
+            modeKeys = Array.from(new Set([...modeKeys, ...Object.keys(parsed)]));
+          }
+        } catch (e) {}
+      }
+      modeKeys.forEach((m) => {
+        try {
+          const savedS = localStorage.getItem('fm_sel_' + m);
+          if (savedS) {
+            defaultSels[m] = JSON.parse(savedS);
+          } else {
+            defaultSels[m] = [];
+          }
+        } catch (e) {
+          defaultSels[m] = [];
+        }
+      });
+    } catch (e) {
+      Object.keys(DEFAULT_MODES).forEach((m) => {
+        defaultSels[m] = [];
+      });
+    }
+    return defaultSels;
+  });
+
   // Countdown Timer State
   const [showCountdown, setShowCountdown] = useState<boolean>(() => {
     try {
@@ -716,6 +787,281 @@ export default function App() {
   const handleMoveCheckedToBottomChange = (val: boolean) => {
     setMoveCheckedToBottom(val);
     localStorage.setItem('fm_move_checked_bottom', String(val));
+  };
+
+  // ── Voice Commands State ──
+  const [voiceCommandsEnabled, setVoiceCommandsEnabled] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('fm_voice_commands');
+      return saved === 'true';
+    } catch (e) {
+      return false;
+    }
+  });
+  const [voiceIsListening, setVoiceIsListening] = useState<boolean>(false);
+  const [voiceStatusText, setVoiceStatusText] = useState<string>('Listening');
+  const [voiceSupported, setVoiceSupported] = useState<boolean>(true);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceMicGranted, setVoiceMicGranted] = useState<boolean>(false);
+  const [micAudioLevel, setMicAudioLevel] = useState<number>(0);
+  const lastVoiceTriggerTimeRef = useRef<number>(0);
+  const triggerVoiceActionRef = useRef<(result: GeminiVoiceResult) => void>(() => {});
+  const geminiVoiceRef = useRef<GeminiVoiceEngine | null>(null);
+
+  // ── WHAT NEXT Mode State ──
+  const [isWhatNextActive, setIsWhatNextActive] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('fm_what_next_active');
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const isWhatNextActiveRef = useRef(isWhatNextActive);
+  useEffect(() => {
+    isWhatNextActiveRef.current = isWhatNextActive;
+  }, [isWhatNextActive]);
+
+  const [whatNextPhase, setWhatNextPhase] = useState<WhatNextPhase>('LISTENING');
+  const [whatNextTranscript, setWhatNextTranscript] = useState<string>('');
+  const [whatNextResult, setWhatNextResult] = useState<WhatNextResultData | null>(null);
+  const [whatNextError, setWhatNextError] = useState<string | null>(null);
+  const [whatNextIsSpeaking, setWhatNextIsSpeaking] = useState<boolean>(false);
+  const [availableSystemVoices, setAvailableSystemVoices] = useState<UnifiedVoiceOption[]>(() => getAvailableSystemVoices());
+  const [selectedVoiceUri, setSelectedVoiceUri] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('fm_voice_uri');
+      if (stored && !stored.startsWith('gemini:')) return stored;
+      return 'default';
+    } catch {
+      return 'default';
+    }
+  });
+  const lastWhatNextQueryRef = useRef<string>('');
+  const lastWhatNextTimestampRef = useRef<number>(0);
+
+  useEffect(() => {
+    const updateVoices = () => {
+      const v = getAvailableSystemVoices();
+      if (v && v.length > 0) {
+        setAvailableSystemVoices(v);
+      }
+    };
+    updateVoices();
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.addEventListener('voiceschanged', updateVoices);
+      return () => {
+        window.speechSynthesis.removeEventListener('voiceschanged', updateVoices);
+      };
+    }
+  }, []);
+
+  const handleVoiceChange = (uri: string) => {
+    setSelectedVoiceUri(uri);
+    try {
+      localStorage.setItem('fm_voice_uri', uri);
+    } catch {}
+  };
+
+  const speakUtterance = useCallback((text: string) => {
+    speakNaturalUtterance(text, {
+      preferredVoiceUri: selectedVoiceUri,
+      rate: 1.02,
+      pitch: 1.0,
+      onStart: () => setWhatNextIsSpeaking(true),
+      onEnd: () => setWhatNextIsSpeaking(false),
+      onError: () => setWhatNextIsSpeaking(false),
+    });
+  }, [selectedVoiceUri]);
+
+  const askWhatNext = useCallback(() => {
+    unlockAudioContext();
+    setWhatNextResult(null);
+    setWhatNextTranscript('');
+    setWhatNextError(null);
+    setWhatNextPhase('LISTENING');
+    playSoundChime('check');
+    speakUtterance('What next?');
+    if (!geminiVoiceRef.current || !geminiVoiceRef.current.running) {
+      requestMicPermission().catch(() => {});
+    }
+  }, [speakUtterance]);
+
+  const processWhatNextQuery = useCallback(async (spokenText: string) => {
+    if (!spokenText || !spokenText.trim()) return;
+    unlockAudioContext();
+    const cleanText = spokenText.trim();
+
+    // Prevent duplicate calls within 2 seconds for identical phrase
+    const now = Date.now();
+    if (cleanText === lastWhatNextQueryRef.current && now - lastWhatNextTimestampRef.current < 2000) {
+      return;
+    }
+    lastWhatNextQueryRef.current = cleanText;
+    lastWhatNextTimestampRef.current = now;
+
+    setWhatNextPhase('ANALYZING');
+    setWhatNextError(null);
+
+    try {
+      // Execute local fuzzy matching directly via Fuse.js
+      // Fast, offline, zero API quota, perfect for Electron builds
+      const data: WhatNextResultData = matchChecklistWithFuse(cleanText, modes, currentMode);
+
+      setWhatNextResult(data);
+      setWhatNextPhase('RESULT');
+      playSoundChime('complete');
+
+      const speech = data.spokenSpeech || `Next step: ${data.nextAction}`;
+      speakUtterance(speech);
+    } catch (err: any) {
+      console.warn('WHAT NEXT matching error:', err);
+      setWhatNextError('Unable to match checklist item. Please try again.');
+      setWhatNextPhase('ERROR');
+    }
+  }, [modes, currentMode, speakUtterance]);
+
+  const handleWhatNextToggle = useCallback((val?: boolean) => {
+    const nextVal = typeof val === 'boolean' ? val : !isWhatNextActiveRef.current;
+    setIsWhatNextActive(nextVal);
+    localStorage.setItem('fm_what_next_active', String(nextVal));
+    if (nextVal) {
+      if (minimizedRef.current) setMinimized(false);
+      setSettingsOpen(false);
+      setPickerOpen(false);
+      askWhatNext();
+    } else {
+      stopCurrentSpeech();
+    }
+  }, [askWhatNext]);
+
+  const requestMicPermission = async () => {
+    try {
+      if (geminiVoiceRef.current) {
+        geminiVoiceRef.current.stop();
+        geminiVoiceRef.current = null;
+      }
+
+      const engine = new GeminiVoiceEngine();
+      engine.onCommand = (cmd: string) => {
+        const u = (cmd || 'NONE').toUpperCase();
+        if (u === 'WHAT_NEXT') {
+          if (!isWhatNextActiveRef.current) {
+            handleWhatNextToggle(true);
+          } else {
+            askWhatNext();
+          }
+        } else if (u === 'NEXT') triggerVoiceActionRef.current({ command: 'NEXT', action: 'NEXT' });
+        else if (u === 'BACK') triggerVoiceActionRef.current({ command: 'BACK', action: 'BACK' });
+        else if (u === 'CALENDAR') triggerVoiceActionRef.current({ command: 'CALENDAR', action: 'CALENDAR' });
+        else if (u === 'CHECKLIST') triggerVoiceActionRef.current({ command: 'CHECKLIST', action: 'CHECKLIST' });
+      };
+
+      engine.onAction = (res: GeminiVoiceResult) => {
+        triggerVoiceActionRef.current(res);
+      };
+
+      engine.onTranscript = (transcript: string) => {
+        if (isWhatNextActiveRef.current) {
+          setWhatNextTranscript(transcript);
+        }
+      };
+
+      engine.onSpeechPhrase = (phrase: string) => {
+        if (isWhatNextActiveRef.current) {
+          const lower = phrase.toLowerCase().trim();
+          if (lower.includes('what next') || lower.includes("what's next") || lower.includes('whats next') || lower.includes('what is next')) {
+            askWhatNext();
+          } else if (phrase.trim().length >= 2) {
+            processWhatNextQuery(phrase.trim());
+          }
+        }
+      };
+
+      engine.onError = (errorMsg: string) => {
+        setVoiceError(errorMsg);
+        setVoiceMicGranted(false);
+        setVoiceIsListening(false);
+        if (isWhatNextActiveRef.current) {
+          setWhatNextError(errorMsg);
+        }
+      };
+
+      engine.onAudioLevel = (level: number) => {
+        setMicAudioLevel(level);
+      };
+
+      engine.onState = (st, msg) => {
+        if (st === 'LISTENING') {
+          setVoiceIsListening(true);
+          setVoiceMicGranted(true);
+          setVoiceError(null);
+          setVoiceStatusText('Listening');
+        } else if (st === 'HEARING') {
+          setVoiceIsListening(true);
+          setVoiceStatusText('Hearing Speech...');
+        } else if (st === 'PROCESSING') {
+          setVoiceIsListening(true);
+          setVoiceStatusText('Finding next action...');
+        } else if (st === 'TRIGGERED') {
+          setVoiceIsListening(true);
+          setVoiceStatusText(msg || 'Triggered! ⚡');
+        } else if (st === 'ERROR') {
+          setVoiceError(msg || 'Microphone permission blocked. Please allow mic access or open app in a new tab.');
+          setVoiceMicGranted(false);
+          setVoiceIsListening(false);
+          setVoiceStatusText('Error');
+          if (isWhatNextActiveRef.current) {
+            setWhatNextError(msg || 'Microphone error');
+          }
+        } else if (st === 'OFF') {
+          setVoiceIsListening(false);
+          setVoiceStatusText('Standby');
+        }
+      };
+
+      await engine.start();
+      geminiVoiceRef.current = engine;
+      setVoiceMicGranted(true);
+      setVoiceIsListening(true);
+      setVoiceError(null);
+      return true;
+    } catch (err: any) {
+      console.warn('Microphone permission request result:', err);
+      setVoiceError(err.name === 'NotAllowedError' || err.message?.includes('denied') ? 'Microphone permission blocked. Please allow mic access or open app in a new tab.' : 'Could not access microphone.');
+      setVoiceMicGranted(false);
+      setVoiceIsListening(false);
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    if (voiceCommandsEnabled) {
+      requestMicPermission().catch(() => {});
+    }
+    return () => {
+      if (geminiVoiceRef.current) {
+        geminiVoiceRef.current.stop();
+        geminiVoiceRef.current = null;
+      }
+    };
+  }, [voiceCommandsEnabled]);
+
+  const handleVoiceCommandsEnabledChange = async (val: boolean) => {
+    setVoiceCommandsEnabled(val);
+    localStorage.setItem('fm_voice_commands', String(val));
+    if (val) {
+      setVoiceError(null);
+      await requestMicPermission();
+    } else {
+      setVoiceIsListening(false);
+      setVoiceError(null);
+      setMicAudioLevel(0);
+      if (geminiVoiceRef.current) {
+        geminiVoiceRef.current.stop();
+        geminiVoiceRef.current = null;
+      }
+    }
   };
 
   const [autoResetDaily, setAutoResetDaily] = useState<boolean>(() => {
@@ -1382,72 +1728,6 @@ export default function App() {
   const [dragOverModeIdx, setDragOverModeIdx] = useState<number | null>(null);
   const [draggedOptionIdx, setDraggedOptionIdx] = useState<number | null>(null);
   const [dragOverOptionIdx, setDragOverOptionIdx] = useState<number | null>(null);
-
-  // Modular Modes Storage
-  const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
-    try {
-      const saved = localStorage.getItem('fm_modes');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
-          const mergedObj: Record<string, ModeDetail> = {};
-          Object.keys(parsed).forEach((k) => {
-            const def = DEFAULT_MODES[k];
-            const opts = Array.isArray(parsed[k]?.options) ? parsed[k].options : (def?.options || []);
-            const baseOpts = Array.isArray(parsed[k]?.baseOptions) && parsed[k].baseOptions.length > 0
-              ? parsed[k].baseOptions
-              : (def?.baseOptions || [...opts]);
-
-            mergedObj[k] = {
-              title: parsed[k]?.title || def?.title || k,
-              accent: parsed[k]?.accent || def?.accent || 'rgba(30, 140, 255, 0.9)',
-              soft: parsed[k]?.soft || def?.soft || 'rgba(60, 170, 255, 0.18)',
-              defaultAccent: parsed[k]?.defaultAccent || def?.defaultAccent || 'rgba(30, 140, 255, 0.9)',
-              defaultSoft: parsed[k]?.defaultSoft || def?.defaultSoft || 'rgba(60, 170, 255, 0.18)',
-              options: opts,
-              baseOptions: baseOpts,
-            };
-          });
-          if (Object.keys(mergedObj).length > 0) return mergedObj;
-        }
-      }
-    } catch (e) {}
-    return DEFAULT_MODES;
-  });
-
-  // Current selections for each mode
-  const [selections, setSelections] = useState<Record<string, number[]>>(() => {
-    const defaultSels: Record<string, number[]> = {};
-    try {
-      const savedModesStr = localStorage.getItem('fm_modes');
-      let modeKeys = Object.keys(DEFAULT_MODES);
-      if (savedModesStr) {
-        try {
-          const parsed = JSON.parse(savedModesStr);
-          if (parsed && typeof parsed === 'object') {
-            modeKeys = Array.from(new Set([...modeKeys, ...Object.keys(parsed)]));
-          }
-        } catch (e) {}
-      }
-      modeKeys.forEach((m) => {
-        try {
-          const savedS = localStorage.getItem('fm_sel_' + m);
-          if (savedS) {
-            defaultSels[m] = JSON.parse(savedS);
-          } else {
-            defaultSels[m] = [];
-          }
-        } catch (e) {
-          defaultSels[m] = [];
-        }
-      });
-    } catch (e) {
-      Object.keys(DEFAULT_MODES).forEach((m) => {
-        defaultSels[m] = [];
-      });
-    }
-    return defaultSels;
-  });
 
   // Mode customizer icons assignment
   const [iconAssignments, setIconAssignments] = useState<Record<string, string>>(() => {
@@ -2736,6 +3016,195 @@ export default function App() {
     setEditingTitle(false);
   };
 
+  // ── Voice Commands Navigation Handlers & Strict Recognition Engine ──
+  const modesRef = useRef(modes);
+  modesRef.current = modes;
+  const currentModeRef = useRef(currentMode);
+  currentModeRef.current = currentMode;
+  const fullModeRef = useRef(fullMode);
+  fullModeRef.current = fullMode;
+  const fullModeIndicesRef = useRef(fullModeIndices);
+  fullModeIndicesRef.current = fullModeIndices;
+  const activeAppRef = useRef(activeApp);
+  activeAppRef.current = activeApp;
+  const minimizedRef = useRef(minimized);
+  minimizedRef.current = minimized;
+  const voiceCommandsEnabledRef = useRef(voiceCommandsEnabled);
+  voiceCommandsEnabledRef.current = voiceCommandsEnabled;
+
+  const handleVoiceNext = useCallback(() => {
+    if (minimizedRef.current) {
+      setMinimized(false);
+    }
+    if (activeAppRef.current !== 'checklist') {
+      setActiveApp('checklist');
+    }
+
+    const currMode = currentModeRef.current;
+    const currentModes = modesRef.current;
+    const isFull = fullModeRef.current;
+    const indices = fullModeIndicesRef.current;
+    const modeKeys = Object.keys(currentModes);
+
+    if (isFull) {
+      const total = currentModes[currMode]?.options.length || 0;
+      const currentIdx = Math.min(
+        Math.max(0, indices[currMode] || 0),
+        Math.max(0, (total || 1) - 1)
+      );
+
+      if (currentIdx < total - 1) {
+        const nextIdx = currentIdx + 1;
+        setFullModeIndices((prev) => {
+          const updated = { ...prev, [currMode]: nextIdx };
+          localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
+          return updated;
+        });
+        fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [currMode]: nextIdx };
+        playSoundChime('check');
+      } else {
+        if (modeKeys.length > 0) {
+          const modeIdx = modeKeys.indexOf(currMode);
+          const nextMode = modeKeys[(modeIdx + 1) % modeKeys.length];
+          setCurrentMode(nextMode);
+          currentModeRef.current = nextMode;
+          localStorage.setItem('fm_current_mode', nextMode);
+          setFullModeIndices((prev) => {
+            const updated = { ...prev, [nextMode]: 0 };
+            localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
+            return updated;
+          });
+          fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [nextMode]: 0 };
+          playSoundChime('check');
+        }
+      }
+    } else {
+      if (modeKeys.length > 0) {
+        const modeIdx = modeKeys.indexOf(currMode);
+        const nextMode = modeKeys[(modeIdx + 1) % modeKeys.length];
+        setCurrentMode(nextMode);
+        currentModeRef.current = nextMode;
+        localStorage.setItem('fm_current_mode', nextMode);
+        playSoundChime('check');
+      }
+    }
+  }, []);
+
+  const handleVoiceBack = useCallback(() => {
+    if (minimizedRef.current) {
+      setMinimized(false);
+    }
+    if (activeAppRef.current !== 'checklist') {
+      setActiveApp('checklist');
+    }
+
+    const currMode = currentModeRef.current;
+    const currentModes = modesRef.current;
+    const isFull = fullModeRef.current;
+    const indices = fullModeIndicesRef.current;
+    const modeKeys = Object.keys(currentModes);
+
+    if (isFull) {
+      const total = currentModes[currMode]?.options.length || 0;
+      const currentIdx = Math.min(
+        Math.max(0, indices[currMode] || 0),
+        Math.max(0, (total || 1) - 1)
+      );
+
+      if (currentIdx > 0) {
+        const prevIdx = currentIdx - 1;
+        setFullModeIndices((prev) => {
+          const updated = { ...prev, [currMode]: prevIdx };
+          localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
+          return updated;
+        });
+        fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [currMode]: prevIdx };
+        playSoundChime('check');
+      } else {
+        if (modeKeys.length > 0) {
+          const modeIdx = modeKeys.indexOf(currMode);
+          const prevMode = modeKeys[(modeIdx - 1 + modeKeys.length) % modeKeys.length];
+          const prevModeTotal = currentModes[prevMode]?.options.length || 1;
+          const targetIdx = Math.max(0, prevModeTotal - 1);
+          setCurrentMode(prevMode);
+          currentModeRef.current = prevMode;
+          localStorage.setItem('fm_current_mode', prevMode);
+          setFullModeIndices((prev) => {
+            const updated = { ...prev, [prevMode]: targetIdx };
+            localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
+            return updated;
+          });
+          fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [prevMode]: targetIdx };
+          playSoundChime('check');
+        }
+      }
+    } else {
+      if (modeKeys.length > 0) {
+        const modeIdx = modeKeys.indexOf(currMode);
+        const prevMode = modeKeys[(modeIdx - 1 + modeKeys.length) % modeKeys.length];
+        setCurrentMode(prevMode);
+        currentModeRef.current = prevMode;
+        localStorage.setItem('fm_current_mode', prevMode);
+        playSoundChime('check');
+      }
+    }
+  }, []);
+
+  const handleVoiceCalendar = useCallback(() => {
+    if (minimizedRef.current) setMinimized(false);
+    setActiveApp('calendar');
+    activeAppRef.current = 'calendar';
+    playSoundChime('check');
+  }, []);
+
+  const handleVoiceChecklist = useCallback(() => {
+    if (minimizedRef.current) setMinimized(false);
+    setActiveApp('checklist');
+    activeAppRef.current = 'checklist';
+    playSoundChime('check');
+  }, []);
+
+  // Centralized voice action dispatcher
+  const triggerVoiceAction = useCallback((result: GeminiVoiceResult) => {
+    const now = Date.now();
+    if (now - lastVoiceTriggerTimeRef.current < 650) return;
+    lastVoiceTriggerTimeRef.current = now;
+
+    const action = (result.command || result.action || 'NONE').toUpperCase();
+
+    if (action === 'WHAT_NEXT') {
+      if (!isWhatNextActiveRef.current) {
+        handleWhatNextToggle(true);
+      } else {
+        askWhatNext();
+      }
+    } else if (action === 'NEXT') {
+      handleVoiceNext();
+    } else if (action === 'BACK') {
+      handleVoiceBack();
+    } else if (action === 'CALENDAR') {
+      handleVoiceCalendar();
+    } else if (action === 'CHECKLIST') {
+      handleVoiceChecklist();
+    } else if (action === 'CHECK_ITEM') {
+      handleVoiceNext();
+    } else if (action === 'TOGGLE_THEME') {
+      setIsLight((prev) => !prev);
+      playSoundChime('check');
+    } else if (action === 'TOGGLE_MINIMIZE') {
+      setMinimized((prev) => !prev);
+      playSoundChime('check');
+    } else if (action === 'TOGGLE_EYE') {
+      setIsEyeMode((prev) => {
+        const next = !prev;
+        localStorage.setItem('fm_eye_mode', next ? '1' : '0');
+        return next;
+      });
+      playSoundChime('check');
+    }
+  }, [handleVoiceNext, handleVoiceBack, handleVoiceCalendar, handleVoiceChecklist]);
+  triggerVoiceActionRef.current = triggerVoiceAction;
+
   // ── Edit operations: Rename items ──
   const commitItemEditing = (idx: number) => {
     if (editingItemIdx === null) return;
@@ -3599,6 +4068,46 @@ export default function App() {
                 </svg>
               </button>
 
+              {/* Settings Gear Button (Only in What Next or Minimized modes, since Full Mode has it in the Mode row beside "MODE") */}
+              {(isWhatNextActive || minimized) && (
+                <button
+                  onClick={() => {
+                    setSettingsOpen(!settingsOpen);
+                    if (editMode) setEditMode(false);
+                    if (pickerOpen) setPickerOpen(false);
+                  }}
+                  style={{
+                    background: settingsOpen
+                      ? (isLight ? 'rgba(0, 0, 0, 0.12)' : 'rgba(255, 255, 255, 0.22)')
+                      : (isLight ? 'rgba(0, 0, 0, 0.06)' : 'rgba(255, 255, 255, 0.08)'),
+                    border: 'none',
+                    borderRadius: '50%',
+                    width: '30px',
+                    height: '30px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    cursor: 'pointer',
+                    color: settingsOpen ? '#0082ff' : (isLight ? '#1a1a2e' : '#ffffff'),
+                    transition: 'all 0.15s ease-in-out',
+                    padding: 0,
+                    margin: 0,
+                  }}
+                  title="Settings & App Options"
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = 'scale(1.1)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = 'scale(1)';
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="3" />
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                  </svg>
+                </button>
+              )}
+
               <button className="close-btn" id="close-btn" onClick={triggerAppShutdown} title="Shutdown App">
                 <svg viewBox="0 0 24 24">
                   <line x1="18" y1="6" x2="6" y2="18" />
@@ -3606,37 +4115,39 @@ export default function App() {
                 </svg>
               </button>
 
-              <button
-                className={`edit-toggle ${(minimized ? isEditingReminder : editMode) ? 'on' : ''}`}
-                id="edit-toggle"
-                onClick={() => {
-                  if (minimized) {
-                    if (isEditingReminder) {
-                      setIsEditingReminder(false);
+              {!isWhatNextActive && (
+                <button
+                  className={`edit-toggle ${(minimized ? isEditingReminder : editMode) ? 'on' : ''}`}
+                  id="edit-toggle"
+                  onClick={() => {
+                    if (minimized) {
+                      if (isEditingReminder) {
+                        setIsEditingReminder(false);
+                      } else {
+                        setTempReminderText(reminderText);
+                        setIsEditingReminder(true);
+                      }
                     } else {
-                      setTempReminderText(reminderText);
-                      setIsEditingReminder(true);
+                      setEditMode(!editMode);
+                      setSettingsOpen(false);
+                      setEditingTitle(false);
+                      setEditingItemIdx(null);
                     }
-                  } else {
-                    setEditMode(!editMode);
-                    setSettingsOpen(false);
-                    setEditingTitle(false);
-                    setEditingItemIdx(null);
-                  }
-                }}
-                title={minimized ? (isEditingReminder ? "Close Reminder Editor" : "Edit Reminder") : "Edit List Configurations"}
-              >
-                {editMode ? (
-                  <svg viewBox="0 0 24 24">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 24 24">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                  </svg>
-                )}
-              </button>
+                  }}
+                  title={minimized ? (isEditingReminder ? "Close Reminder Editor" : "Edit Reminder") : "Edit List Configurations"}
+                >
+                  {editMode ? (
+                    <svg viewBox="0 0 24 24">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  ) : (
+                    <svg viewBox="0 0 24 24">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                    </svg>
+                  )}
+                </button>
+              )}
             </>
           )}
 
@@ -3729,355 +4240,6 @@ export default function App() {
         </div>
         <div style={{ display: activeApp === 'checklist' ? 'contents' : 'none' }}>
 
-
-        {/* Render Minimized Reminder View when minimized, or full Checklist View when expanded */}
-        {minimized ? (
-          <MinimizedReminderView
-            reminderText={reminderText}
-            isEditingReminder={isEditingReminder}
-            tempReminderText={tempReminderText}
-            isLight={isLight}
-            accentSoft={modes[currentMode]?.soft}
-            animateText={animateMinimizedText}
-            extraHeight={minimizedExtraHeight}
-            setTempReminderText={setTempReminderText}
-            setIsEditingReminder={setIsEditingReminder}
-            handleSaveReminder={handleSaveReminder}
-            getReminderFontSize={getReminderFontSize}
-          />
-        ) : (
-          <>
-            {/* Tab mode selection icons row */}
-            <div
-              className="icons"
-              style={{
-                display: 'flex',
-                justifyContent: 'center',
-                gap: '8px',
-                alignItems: 'center',
-                marginTop: 0,
-                marginLeft: 0,
-                marginRight: 0,
-                marginBottom: isEyeMode ? '10px' : '16px',
-                flexShrink: 0,
-                width: '100%',
-                position: 'relative',
-                zIndex: 5,
-                padding: 0,
-              }}
-            >
-              {Object.keys(modes).map((mKey, mIdx) => {
-                const waveParams = compileLiquidWaveData(mKey);
-                const hasLiquidFill = waveParams.hasLiquidFill;
-                const isSelected = mKey === currentMode;
-                const modeAccent = modes[mKey]?.accent || 'var(--accent)';
-
-                let translateX = 0;
-                let isBeingDragged = false;
-
-                if (modeDragState) {
-                  if (modeDragState.activeKey === mKey) {
-                    isBeingDragged = true;
-                    translateX = modeDragState.currentX - modeDragState.startX;
-                  } else {
-                    const from = modeDragState.fromIdx;
-                    const current = modeDragState.currentIdx;
-                    if (mIdx > from && mIdx <= current) {
-                      translateX = -58;
-                    } else if (mIdx < from && mIdx >= current) {
-                      translateX = 58;
-                    }
-                  }
-                }
-
-                return (
-                  <div
-                    key={mKey}
-                    className={`icon-wrap ${completedSplashMode === mKey ? 'splash-active' : ''} ${isSelected ? 'active-mode' : 'inactive-mode'}`}
-                    style={{
-                      '--splash-color': modeAccent,
-                      position: 'relative',
-                      zIndex: isBeingDragged ? 20 : (isSelected ? 6 : 5),
-                      cursor: editMode ? 'grab' : 'pointer',
-                      opacity: 1,
-                      transform: `translateX(${translateX}px)`,
-                      transition: isBeingDragged ? 'none' : 'transform 0.22s cubic-bezier(0.2, 0, 0, 1)',
-                      userSelect: 'none',
-                      touchAction: 'none',
-                    } as React.CSSProperties}
-                    onPointerDown={(e) => handleModePointerDown(e, mKey, mIdx)}
-                  >
-                    {/* Re-order Mode Drag Handle in Edit Mode (Grip Dots Only) */}
-                    {editMode && (
-                      <div
-                        className="mode-drag-handle"
-                        title="Drag to reorder mode"
-                        style={{
-                          position: 'absolute',
-                          top: '-11px',
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          background: isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(15, 23, 42, 0.96)',
-                          backdropFilter: 'blur(8px)',
-                          borderRadius: '999px',
-                          padding: '3px 7px',
-                          zIndex: 12,
-                          border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.25)'),
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
-                          color: isLight ? '#0f172a' : '#ffffff',
-                          cursor: 'grab',
-                          userSelect: 'none',
-                        }}
-                      >
-                        <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
-                          <circle cx="9" cy="6" r="1.5" />
-                          <circle cx="15" cy="6" r="1.5" />
-                          <circle cx="9" cy="12" r="1.5" />
-                          <circle cx="15" cy="12" r="1.5" />
-                          <circle cx="9" cy="18" r="1.5" />
-                          <circle cx="15" cy="18" r="1.5" />
-                        </svg>
-                      </div>
-                    )}
-                    <Glass
-                      isLight={isLight}
-                      className="mode-icon-glass"
-                      borderRadius={25}
-                      width={50}
-                      height={50}
-                      variant={isSelected ? "default" : "subtle"}
-                      backgroundOpacity={isSelected ? (isLight ? 0.35 : 0.18) : (isLight ? 0.15 : 0.08)}
-                      style={{
-                        borderRadius: '50%',
-                        transform: 'scale(1.0)',
-                        transition: 'box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease',
-                        boxShadow: isEyeMode
-                          ? 'none'
-                          : (isSelected ? `0 0 0 2px ${modeAccent}` : '0 0 0 0px transparent'),
-                        border: isEyeMode
-                          ? (isSelected ? `2px solid ${modeAccent}` : '2px solid transparent')
-                          : undefined,
-                        position: 'relative',
-                      }}
-                    >
-                      {hasLiquidFill && (
-                        <div className="liquid-container">
-                          <svg viewBox="0 0 50 50">
-                            <defs>
-                              <clipPath id={`lc-clip-${mKey}`}>
-                                <circle cx="25" cy="25" r="24.5" />
-                              </clipPath>
-                              <linearGradient id={`lc-grad-${mKey}`} x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor={waveParams.gradientHigh} />
-                                <stop offset="100%" stopColor={waveParams.baseColor} />
-                              </linearGradient>
-                            </defs>
-                            <g clipPath={`url(#lc-clip-${mKey})`}>
-                              {/* Underlay color rectangle */}
-                              <rect x="-15" y={waveParams.waterY} width="80" height={52 - waveParams.waterY} fill={waveParams.baseColor} />
-                              {/* Floating wave overlay using CSS math slosh animation */}
-                              <g style={{ animation: 'liquidBob 3.2s ease-in-out infinite' }}>
-                                <path
-                                  style={{
-                                    animation: 'liquidSlosh 3.8s ease-in-out infinite',
-                                    transformOrigin: 'center center',
-                                  }}
-                                  d={waveParams.wavePath}
-                                  fill={`url(#lc-grad-${mKey})`}
-                                />
-                              </g>
-                            </g>
-                          </svg>
-                        </div>
-                      )}
-                      {completedSplashMode === mKey && (
-                        <div className="icon-splash-droplets">
-                          <span className="i-drop d1" style={{ backgroundColor: waveParams.gradientHigh }} />
-                          <span className="i-drop d2" style={{ backgroundColor: '#ffffff' }} />
-                          <span className="i-drop d3" style={{ backgroundColor: waveParams.gradientHigh }} />
-                          <span className="i-drop d4" style={{ backgroundColor: '#ffffff' }} />
-                          <span className="i-drop d5" style={{ backgroundColor: waveParams.gradientHigh }} />
-                        </div>
-                      )}
-                      <button
-                        className={`icon-btn ${isSelected ? 'active' : ''} ${hasLiquidFill ? 'has-liquid' : ''}`}
-                        data-mode={mKey}
-                        onClick={() => {
-                          if (!isDraggingModeRef.current) {
-                            handleModeIconClick(mKey);
-                          }
-                        }}
-                        style={{
-                          backgroundColor: !hasLiquidFill
-                            ? (isSelected ? (modes[mKey]?.accent || 'var(--accent)') : 'transparent')
-                            : 'transparent',
-                          border: 'none',
-                          boxShadow: 'none',
-                          width: '100%',
-                          height: '100%',
-                          transform: 'none',
-                        }}
-                      >
-                        {renderIcon(iconAssignments[mKey])}
-                      </button>
-                    </Glass>
-                  </div>
-                );
-              })}
-            </div>
-
-        {/* Tab Mode configuration Picker overlay */}
-        {pickerOpen && pickerTargetMode && (
-          <div className={`icon-picker open`} id="icon-picker">
-            <div className="picker-header">
-              <span className="picker-title">Config Mode</span>
-              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                <button
-                  className="picker-done"
-                  onClick={() => {
-                    setPickerOpen(false);
-                    setPickerTargetMode(null);
-                  }}
-                  title="Done"
-                >
-                  <svg viewBox="0 0 24 24">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                  Done
-                </button>
-                <button
-                  className="picker-close"
-                  onClick={() => {
-                    setPickerOpen(false);
-                    setPickerTargetMode(null);
-                  }}
-                >
-                  <svg viewBox="0 0 24 24">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Accent selection row */}
-            <div className="color-row">
-              {/* Reset to base accent button */}
-              <div
-                className="color-swatch color-reset"
-                title="Reset default color"
-                style={{ background: DEFAULT_MODES[pickerTargetMode]?.accent }}
-                onClick={() => resetModeColorToDefault(pickerTargetMode)}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
-                  <polyline points="1 4 1 10 7 10" />
-                  <path d="M3.51 15a9 9 0 1 0 .49-4.5" />
-                </svg>
-              </div>
-
-              {/* presets */}
-              {COLOR_PRESETS.map((colorObj, idx) => (
-                <div
-                  className={`color-swatch ${modes[pickerTargetMode]?.accent === colorObj.accent ? 'active' : ''}`}
-                  key={idx}
-                  style={{ background: colorObj.accent }}
-                  onClick={() => assignModeColor(pickerTargetMode, colorObj.accent, colorObj.soft)}
-                ></div>
-              ))}
-
-              {/* Custom input color element */}
-              <div className="color-custom-wrap" title="Custom hex color">
-                <svg viewBox="0 0 24 24">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                <input
-                  className="color-custom-input"
-                  type="color"
-                  defaultValue="#6e00d2"
-                  onChange={(e) => {
-                    const parsed = hexToAccent(e.target.value);
-                    assignModeColor(pickerTargetMode, parsed.accent, parsed.soft);
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* Hidden File Input for Custom SVG / PNG Upload */}
-            <input
-              type="file"
-              ref={iconFileInputRef}
-              accept=".svg, .png, .jpg, .jpeg, .webp, image/svg+xml, image/png"
-              onChange={handleCustomIconUpload}
-              style={{ display: 'none' }}
-            />
-
-            {/* Icon grid options list selector */}
-            <div className="picker-grid">
-              {/* Custom Icon Upload Tile */}
-              <div
-                className="picker-item picker-upload"
-                title="Upload custom SVG or PNG icon file"
-                onClick={(e) => {
-                  triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
-                  iconFileInputRef.current?.click();
-                }}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                <span>Upload SVG/PNG</span>
-              </div>
-
-              {/* Custom uploaded icons */}
-              {Object.entries(customIcons).map(([cKey, cDef]) => {
-                const item = cDef as { label: string; src: string; format: string };
-                return (
-                  <div
-                    className={`picker-item custom-picker-item ${iconAssignments[pickerTargetMode] === cKey ? 'current' : ''}`}
-                    key={cKey}
-                    onClick={(e) => {
-                      triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
-                      assignModeIcon(pickerTargetMode, cKey);
-                    }}
-                    style={{ position: 'relative' }}
-                  >
-                    <button
-                      className="picker-item-delete"
-                      title="Delete custom icon"
-                      onClick={(e) => deleteCustomIcon(e, cKey)}
-                    >
-                      ×
-                    </button>
-                    {renderIcon(cKey)}
-                    <span>{item.label}</span>
-                  </div>
-                );
-              })}
-
-              {/* Built-in icons */}
-              {Object.entries(ICON_LIBRARY).map(([libKey, def]) => (
-                <div
-                  className={`picker-item ${iconAssignments[pickerTargetMode] === libKey ? 'current' : ''}`}
-                  key={libKey}
-                  onClick={(e) => {
-                    triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
-                    assignModeIcon(pickerTargetMode, libKey);
-                  }}
-                >
-                  {def.svg}
-                  <span>{def.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
         {/* Global Settings Panel overlay */}
         {settingsOpen && (
           <div
@@ -4144,15 +4306,33 @@ export default function App() {
                 />
               </div>
 
-              {/* Display Mode Setting: Checklist vs Full Mode */}
+              {/* Display Mode Setting: Checklist vs Full Mode vs What Next? */}
               <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
                 <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>Display Mode</span>
                 <GooeyNav
                   items={[
-                    { label: 'Checklist', onClick: () => handleFullModeChange(false) },
-                    { label: 'Full Mode', onClick: () => handleFullModeChange(true) },
+                    {
+                      label: 'Checklist',
+                      onClick: () => {
+                        handleFullModeChange(false);
+                        handleWhatNextToggle(false);
+                      },
+                    },
+                    {
+                      label: 'Full Mode',
+                      onClick: () => {
+                        handleFullModeChange(true);
+                        handleWhatNextToggle(false);
+                      },
+                    },
+                    {
+                      label: 'What Next?',
+                      onClick: () => {
+                        handleWhatNextToggle(true);
+                      },
+                    },
                   ]}
-                  activeIndex={fullMode ? 1 : 0}
+                  activeIndex={isWhatNextActive ? 2 : (fullMode ? 1 : 0)}
                   particleCount={12}
                   animationTime={450}
                 />
@@ -4234,6 +4414,150 @@ export default function App() {
                   particleCount={12}
                   animationTime={450}
                 />
+              </div>
+
+              {/* Voice Commands Setting */}
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                    Voice Commands
+                  </span>
+                  {voiceCommandsEnabled && (
+                    <span style={{ fontSize: '8.5px', fontWeight: '700', color: voiceError ? '#ff5252' : (voiceIsListening ? '#00e676' : '#38bdf8'), display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: voiceError ? '#ff5252' : (voiceIsListening ? '#00e676' : '#38bdf8'), animation: voiceIsListening ? 'pulse 1.5s infinite' : 'none' }} />
+                      {voiceError ? 'Mic Blocked' : voiceStatusText}
+                    </span>
+                  )}
+                </div>
+                <GooeyNav
+                  items={[
+                    { label: 'Enabled', onClick: () => handleVoiceCommandsEnabledChange(true) },
+                    { label: 'Disabled', onClick: () => handleVoiceCommandsEnabledChange(false) },
+                  ]}
+                  activeIndex={voiceCommandsEnabled ? 0 : 1}
+                  particleCount={12}
+                  animationTime={450}
+                />
+                {voiceCommandsEnabled && (
+                  <div style={{ fontSize: '9px', lineHeight: 1.45, color: isLight ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.75)', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', borderRadius: '7px', padding: '8px 10px', border: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {/* Live Mic Volume Level Meter */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', padding: '5px 7px', borderRadius: '5px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '8px', fontWeight: '700' }}>
+                        <span style={{ color: isLight ? '#475569' : '#94a3b8' }}>Gemini Audio Stream:</span>
+                        <span style={{ color: micAudioLevel > 10 ? '#00e676' : (isLight ? '#64748b' : '#94a3b8') }}>
+                          {micAudioLevel > 10 ? `Vocal Energy (${micAudioLevel}%)` : 'Silent / Standby'}
+                        </span>
+                      </div>
+                      <div style={{ width: '100%', height: '5px', background: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+                        <div
+                          style={{
+                            height: '100%',
+                            width: `${Math.max(3, micAudioLevel)}%`,
+                            background: micAudioLevel > 12 ? '#00e676' : '#38bdf8',
+                            transition: 'width 0.08s ease-out',
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ fontWeight: '700', color: isLight ? '#0284c7' : '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                          <line x1="12" y1="19" x2="12" y2="22" />
+                        </svg>
+                        Gemini 2.5 AI Listener:
+                      </span>
+                      <button
+                        onClick={requestMicPermission}
+                        style={{
+                          background: isLight ? 'rgba(2, 132, 199, 0.12)' : 'rgba(56, 189, 248, 0.15)',
+                          color: isLight ? '#0284c7' : '#38bdf8',
+                          border: '1px solid ' + (isLight ? 'rgba(2, 132, 199, 0.25)' : 'rgba(56, 189, 248, 0.3)'),
+                          borderRadius: '4px',
+                          padding: '2px 6px',
+                          fontSize: '8px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {voiceMicGranted ? '✓ Mic Active' : 'Grant Mic Permission'}
+                      </button>
+                    </div>
+
+                    {/* Speech Voice Output Selector */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', padding: '6px 8px', borderRadius: '6px', border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)') }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontWeight: '700', fontSize: '8px', color: isLight ? '#334155' : '#e2e8f0', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                          </svg>
+                          Voice Speech Engine:
+                        </span>
+                        <button
+                          onClick={() => {
+                            speakUtterance('Next, verify your 15-minute entry trigger and manage risk.');
+                          }}
+                          style={{
+                            background: isLight ? 'rgba(2, 132, 199, 0.12)' : 'rgba(56, 189, 248, 0.16)',
+                            color: isLight ? '#0284c7' : '#38bdf8',
+                            border: '1px solid ' + (isLight ? 'rgba(2, 132, 199, 0.25)' : 'rgba(56, 189, 248, 0.3)'),
+                            borderRadius: '4px',
+                            padding: '1px 6px',
+                            fontSize: '8px',
+                            fontWeight: '700',
+                            cursor: 'pointer',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                          }}
+                          title="Preview the speech voice output"
+                        >
+                          🔊 Test Voice
+                        </button>
+                      </div>
+
+                      <select
+                        value={selectedVoiceUri}
+                        onChange={(e) => handleVoiceChange(e.target.value)}
+                        style={{
+                          width: '100%',
+                          background: isLight ? '#ffffff' : '#0f172a',
+                          color: isLight ? '#0f172a' : '#f8fafc',
+                          border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
+                          borderRadius: '5px',
+                          padding: '4px 8px',
+                          fontSize: '8.5px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                          outline: 'none',
+                        }}
+                      >
+                        {availableSystemVoices.map((gv) => (
+                          <option key={gv.uri} value={gv.uri}>
+                            {gv.name} {gv.description ? `(${gv.description})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div style={{ fontSize: '8px', opacity: 0.85, lineHeight: 1.4 }}>
+                      Uses native browser speech synthesis (free, offline, unlimited). Speak naturally: <em>"next"</em>, <em>"back"</em>, <em>"open calendar"</em>, <em>"open checklist"</em>, <em>"what next"</em>.
+                    </div>
+
+                    {voiceError && (
+                      <div style={{ color: '#ff5252', fontSize: '8.5px', marginTop: '2px', fontWeight: '600', lineHeight: 1.35 }}>
+                        ⚠️ {voiceError}
+                        <div style={{ fontSize: '8px', opacity: 0.85, marginTop: '2px' }}>
+                          (If in iframe preview, open in a new tab or click "Grant Mic Permission" above to allow microphone access)
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Wallpaper Background Settings */}
@@ -4689,6 +5013,388 @@ export default function App() {
           </div>
         )}
 
+        {/* Render WHAT NEXT View when active, Minimized Reminder View when minimized, or full Checklist View when expanded */}
+        {isWhatNextActive ? (
+          <WhatNextView
+            isLight={isLight}
+            isEyeMode={isEyeMode}
+            phase={whatNextPhase}
+            transcript={whatNextTranscript}
+            result={whatNextResult}
+            error={whatNextError}
+            isSpeaking={whatNextIsSpeaking}
+            micAudioLevel={micAudioLevel}
+            voiceIsListening={voiceIsListening}
+            accentColor={modes[currentMode]?.accent || '#38bdf8'}
+            extraHeight={expandedExtraHeight}
+            onAskWhatNext={askWhatNext}
+            onSubmitQuery={processWhatNextQuery}
+            onExitWhatNext={() => handleWhatNextToggle(false)}
+            onReplaySpeech={() => {
+              if (whatNextResult) {
+                const speech = whatNextResult.spokenSpeech || `Next step: ${whatNextResult.nextAction}`;
+                speakUtterance(speech);
+              }
+            }}
+            onJumpToStep={(modeName, itemIdx) => {
+              const foundModeKey = Object.keys(modes).find(
+                (k) => k.toLowerCase() === modeName.toLowerCase() || modes[k]?.title.toLowerCase() === modeName.toLowerCase()
+              );
+              if (foundModeKey) {
+                setCurrentMode(foundModeKey);
+                currentModeRef.current = foundModeKey;
+                localStorage.setItem('fm_current_mode', foundModeKey);
+              }
+              handleWhatNextToggle(false);
+            }}
+          />
+        ) : minimized ? (
+          <MinimizedReminderView
+            reminderText={reminderText}
+            isEditingReminder={isEditingReminder}
+            tempReminderText={tempReminderText}
+            isLight={isLight}
+            accentSoft={modes[currentMode]?.soft}
+            animateText={animateMinimizedText}
+            extraHeight={minimizedExtraHeight}
+            setTempReminderText={setTempReminderText}
+            setIsEditingReminder={setIsEditingReminder}
+            handleSaveReminder={handleSaveReminder}
+            getReminderFontSize={getReminderFontSize}
+          />
+        ) : (
+          <>
+            {/* Tab mode selection icons row */}
+            <div
+              className="icons"
+              style={{
+                display: 'flex',
+                justifyContent: 'center',
+                gap: '8px',
+                alignItems: 'center',
+                marginTop: 0,
+                marginLeft: 0,
+                marginRight: 0,
+                marginBottom: isEyeMode ? '10px' : '16px',
+                flexShrink: 0,
+                width: '100%',
+                position: 'relative',
+                zIndex: 5,
+                padding: 0,
+              }}
+            >
+              {Object.keys(modes).map((mKey, mIdx) => {
+                const waveParams = compileLiquidWaveData(mKey);
+                const hasLiquidFill = waveParams.hasLiquidFill;
+                const isSelected = mKey === currentMode;
+                const modeAccent = modes[mKey]?.accent || 'var(--accent)';
+
+                let translateX = 0;
+                let isBeingDragged = false;
+
+                if (modeDragState) {
+                  if (modeDragState.activeKey === mKey) {
+                    isBeingDragged = true;
+                    translateX = modeDragState.currentX - modeDragState.startX;
+                  } else {
+                    const from = modeDragState.fromIdx;
+                    const current = modeDragState.currentIdx;
+                    if (mIdx > from && mIdx <= current) {
+                      translateX = -58;
+                    } else if (mIdx < from && mIdx >= current) {
+                      translateX = 58;
+                    }
+                  }
+                }
+
+                return (
+                  <div
+                    key={mKey}
+                    className={`icon-wrap ${completedSplashMode === mKey ? 'splash-active' : ''} ${isSelected ? 'active-mode' : 'inactive-mode'}`}
+                    style={{
+                      '--splash-color': modeAccent,
+                      position: 'relative',
+                      zIndex: isBeingDragged ? 20 : (isSelected ? 6 : 5),
+                      cursor: editMode ? 'grab' : 'pointer',
+                      opacity: 1,
+                      transform: `translateX(${translateX}px)`,
+                      transition: isBeingDragged ? 'none' : 'transform 0.22s cubic-bezier(0.2, 0, 0, 1)',
+                      userSelect: 'none',
+                      touchAction: 'none',
+                    } as React.CSSProperties}
+                    onPointerDown={(e) => handleModePointerDown(e, mKey, mIdx)}
+                  >
+                    {/* Re-order Mode Drag Handle in Edit Mode (Grip Dots Only) */}
+                    {editMode && (
+                      <div
+                        className="mode-drag-handle"
+                        title="Drag to reorder mode"
+                        style={{
+                          position: 'absolute',
+                          top: '-11px',
+                          left: '50%',
+                          transform: 'translateX(-50%)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          background: isLight ? 'rgba(255, 255, 255, 0.96)' : 'rgba(15, 23, 42, 0.96)',
+                          backdropFilter: 'blur(8px)',
+                          borderRadius: '999px',
+                          padding: '3px 7px',
+                          zIndex: 12,
+                          border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.18)' : 'rgba(255,255,255,0.25)'),
+                          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                          color: isLight ? '#0f172a' : '#ffffff',
+                          cursor: 'grab',
+                          userSelect: 'none',
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+                          <circle cx="9" cy="6" r="1.5" />
+                          <circle cx="15" cy="6" r="1.5" />
+                          <circle cx="9" cy="12" r="1.5" />
+                          <circle cx="15" cy="12" r="1.5" />
+                          <circle cx="9" cy="18" r="1.5" />
+                          <circle cx="15" cy="18" r="1.5" />
+                        </svg>
+                      </div>
+                    )}
+                    <Glass
+                      isLight={isLight}
+                      className="mode-icon-glass"
+                      borderRadius={25}
+                      width={50}
+                      height={50}
+                      variant={isSelected ? "default" : "subtle"}
+                      backgroundOpacity={isSelected ? (isLight ? 0.35 : 0.18) : (isLight ? 0.15 : 0.08)}
+                      style={{
+                        borderRadius: '50%',
+                        transform: 'scale(1.0)',
+                        transition: 'box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease',
+                        boxShadow: isEyeMode
+                          ? 'none'
+                          : (isSelected ? `0 0 0 2px ${modeAccent}` : '0 0 0 0px transparent'),
+                        border: isEyeMode
+                          ? (isSelected ? `2px solid ${modeAccent}` : '2px solid transparent')
+                          : undefined,
+                        position: 'relative',
+                      }}
+                    >
+                      {hasLiquidFill && (
+                        <div className="liquid-container">
+                          <svg viewBox="0 0 50 50">
+                            <defs>
+                              <clipPath id={`lc-clip-${mKey}`}>
+                                <circle cx="25" cy="25" r="24.5" />
+                              </clipPath>
+                              <linearGradient id={`lc-grad-${mKey}`} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor={waveParams.gradientHigh} />
+                                <stop offset="100%" stopColor={waveParams.baseColor} />
+                              </linearGradient>
+                            </defs>
+                            <g clipPath={`url(#lc-clip-${mKey})`}>
+                              {/* Underlay color rectangle */}
+                              <rect x="-15" y={waveParams.waterY} width="80" height={52 - waveParams.waterY} fill={waveParams.baseColor} />
+                              {/* Floating wave overlay using CSS math slosh animation */}
+                              <g style={{ animation: 'liquidBob 3.2s ease-in-out infinite' }}>
+                                <path
+                                  style={{
+                                    animation: 'liquidSlosh 3.8s ease-in-out infinite',
+                                    transformOrigin: 'center center',
+                                  }}
+                                  d={waveParams.wavePath}
+                                  fill={`url(#lc-grad-${mKey})`}
+                                />
+                              </g>
+                            </g>
+                          </svg>
+                        </div>
+                      )}
+                      {completedSplashMode === mKey && (
+                        <div className="icon-splash-droplets">
+                          <span className="i-drop d1" style={{ backgroundColor: waveParams.gradientHigh }} />
+                          <span className="i-drop d2" style={{ backgroundColor: '#ffffff' }} />
+                          <span className="i-drop d3" style={{ backgroundColor: waveParams.gradientHigh }} />
+                          <span className="i-drop d4" style={{ backgroundColor: '#ffffff' }} />
+                          <span className="i-drop d5" style={{ backgroundColor: waveParams.gradientHigh }} />
+                        </div>
+                      )}
+                      <button
+                        className={`icon-btn ${isSelected ? 'active' : ''} ${hasLiquidFill ? 'has-liquid' : ''}`}
+                        data-mode={mKey}
+                        onClick={() => {
+                          if (!isDraggingModeRef.current) {
+                            handleModeIconClick(mKey);
+                          }
+                        }}
+                        style={{
+                          backgroundColor: !hasLiquidFill
+                            ? (isSelected ? (modes[mKey]?.accent || 'var(--accent)') : 'transparent')
+                            : 'transparent',
+                          border: 'none',
+                          boxShadow: 'none',
+                          width: '100%',
+                          height: '100%',
+                          transform: 'none',
+                        }}
+                      >
+                        {renderIcon(iconAssignments[mKey])}
+                      </button>
+                    </Glass>
+                  </div>
+                );
+              })}
+            </div>
+
+        {/* Tab Mode configuration Picker overlay */}
+        {pickerOpen && pickerTargetMode && (
+          <div className={`icon-picker open`} id="icon-picker">
+            <div className="picker-header">
+              <span className="picker-title">Config Mode</span>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <button
+                  className="picker-done"
+                  onClick={() => {
+                    setPickerOpen(false);
+                    setPickerTargetMode(null);
+                  }}
+                  title="Done"
+                >
+                  <svg viewBox="0 0 24 24">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                  Done
+                </button>
+                <button
+                  className="picker-close"
+                  onClick={() => {
+                    setPickerOpen(false);
+                    setPickerTargetMode(null);
+                  }}
+                >
+                  <svg viewBox="0 0 24 24">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Accent selection row */}
+            <div className="color-row">
+              {/* Reset to base accent button */}
+              <div
+                className="color-swatch color-reset"
+                title="Reset default color"
+                style={{ background: DEFAULT_MODES[pickerTargetMode]?.accent }}
+                onClick={() => resetModeColorToDefault(pickerTargetMode)}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round">
+                  <polyline points="1 4 1 10 7 10" />
+                  <path d="M3.51 15a9 9 0 1 0 .49-4.5" />
+                </svg>
+              </div>
+
+              {/* presets */}
+              {COLOR_PRESETS.map((colorObj, idx) => (
+                <div
+                  className={`color-swatch ${modes[pickerTargetMode]?.accent === colorObj.accent ? 'active' : ''}`}
+                  key={idx}
+                  style={{ background: colorObj.accent }}
+                  onClick={() => assignModeColor(pickerTargetMode, colorObj.accent, colorObj.soft)}
+                ></div>
+              ))}
+
+              {/* Custom input color element */}
+              <div className="color-custom-wrap" title="Custom hex color">
+                <svg viewBox="0 0 24 24">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                <input
+                  className="color-custom-input"
+                  type="color"
+                  defaultValue="#6e00d2"
+                  onChange={(e) => {
+                    const parsed = hexToAccent(e.target.value);
+                    assignModeColor(pickerTargetMode, parsed.accent, parsed.soft);
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Hidden File Input for Custom SVG / PNG Upload */}
+            <input
+              type="file"
+              ref={iconFileInputRef}
+              accept=".svg, .png, .jpg, .jpeg, .webp, image/svg+xml, image/png"
+              onChange={handleCustomIconUpload}
+              style={{ display: 'none' }}
+            />
+
+            {/* Icon grid options list selector */}
+            <div className="picker-grid">
+              {/* Custom Icon Upload Tile */}
+              <div
+                className="picker-item picker-upload"
+                title="Upload custom SVG or PNG icon file"
+                onClick={(e) => {
+                  triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
+                  iconFileInputRef.current?.click();
+                }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                <span>Upload SVG/PNG</span>
+              </div>
+
+              {/* Custom uploaded icons */}
+              {Object.entries(customIcons).map(([cKey, cDef]) => {
+                const item = cDef as { label: string; src: string; format: string };
+                return (
+                  <div
+                    className={`picker-item custom-picker-item ${iconAssignments[pickerTargetMode] === cKey ? 'current' : ''}`}
+                    key={cKey}
+                    onClick={(e) => {
+                      triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
+                      assignModeIcon(pickerTargetMode, cKey);
+                    }}
+                    style={{ position: 'relative' }}
+                  >
+                    <button
+                      className="picker-item-delete"
+                      title="Delete custom icon"
+                      onClick={(e) => deleteCustomIcon(e, cKey)}
+                    >
+                      ×
+                    </button>
+                    {renderIcon(cKey)}
+                    <span>{item.label}</span>
+                  </div>
+                );
+              })}
+
+              {/* Built-in icons */}
+              {Object.entries(ICON_LIBRARY).map(([libKey, def]) => (
+                <div
+                  className={`picker-item ${iconAssignments[pickerTargetMode] === libKey ? 'current' : ''}`}
+                  key={libKey}
+                  onClick={(e) => {
+                    triggerGooeyParticles(e.currentTarget, modes[pickerTargetMode]?.accent);
+                    assignModeIcon(pickerTargetMode, libKey);
+                  }}
+                >
+                  {def.svg}
+                  <span>{def.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Text Header Mode Descriptions */}
         <div className="mode-row">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -4705,12 +5411,14 @@ export default function App() {
               title="Checklist Settings"
               style={{
                 background: settingsOpen
-                  ? (isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.2)')
-                  : 'transparent',
-                border: 'none',
+                  ? (isLight ? 'rgba(2, 132, 199, 0.22)' : 'rgba(56, 189, 248, 0.28)')
+                  : (isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.16)'),
+                border: settingsOpen
+                  ? `1px solid ${isLight ? '#0284c7' : '#38bdf8'}`
+                  : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.18)' : 'rgba(255, 255, 255, 0.28)'}`,
                 borderRadius: '50%',
-                width: '22px',
-                height: '22px',
+                width: '24px',
+                height: '24px',
                 padding: 0,
                 margin: 0,
                 display: 'inline-flex',
@@ -4719,23 +5427,25 @@ export default function App() {
                 cursor: 'pointer',
                 color: settingsOpen
                   ? (isLight ? '#0284c7' : '#38bdf8')
-                  : (isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)'),
-                transition: 'all 0.15s ease-in-out',
+                  : (isLight ? '#1e293b' : '#ffffff'),
+                boxShadow: isLight ? '0 1px 3px rgba(0,0,0,0.1)' : '0 2px 6px rgba(0,0,0,0.4)',
+                transition: 'all 0.18s ease-in-out',
+                flexShrink: 0,
               }}
               onMouseEnter={(e) => {
                 e.currentTarget.style.color = isLight ? '#0284c7' : '#38bdf8';
-                e.currentTarget.style.transform = 'scale(1.1)';
+                e.currentTarget.style.transform = 'scale(1.12)';
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.color = settingsOpen
                   ? (isLight ? '#0284c7' : '#38bdf8')
-                  : (isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.5)');
+                  : (isLight ? '#1e293b' : '#ffffff');
                 e.currentTarget.style.transform = 'scale(1)';
               }}
             >
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                 <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
             </button>
           </div>
@@ -5703,14 +6413,16 @@ export default function App() {
         })()}
 
           {/* Reset tab-checkboxes trigger */}
-          <div className="reset-wrap font-sans" onClick={triggerResetChecklist} style={{ userSelect: 'none' }}>
-            <button className="reset-btn" tabIndex={-1}>
-              <svg viewBox="0 0 24 24">
-                <polyline points="1 4 1 10 7 10" />
-                <path d="M3.51 15a9 9 0 1 0 .49-4.5" />
-              </svg>
-              <span id="reset-label">{editMode ? 'Reset all columns' : 'Reset active column'}</span>
-            </button>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '2px' }}>
+            <div className="reset-wrap font-sans" onClick={triggerResetChecklist} style={{ userSelect: 'none', margin: 0 }}>
+              <button className="reset-btn" tabIndex={-1}>
+                <svg viewBox="0 0 24 24">
+                  <polyline points="1 4 1 10 7 10" />
+                  <path d="M3.51 15a9 9 0 1 0 .49-4.5" />
+                </svg>
+                <span id="reset-label">{editMode ? 'Reset all columns' : 'Reset active column'}</span>
+              </button>
+            </div>
           </div>
         </div>
           </>

@@ -17,7 +17,12 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:3000 && electron .\"",
-    "electron:build": "npm run build && electron-builder --win"
+    "electron:build": "npm run build && electron-builder --win",
+    "android:icons": "node scripts/generate-android-icons.cjs",
+    "android:sync": "npm run build && npm run android:icons && npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:release": "npm run android:sync && cd android && ./gradlew assembleRelease"
   },
   "build": {
     "appId": "com.overdesk.nexus",
@@ -46,6 +51,9 @@
     ]
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.1",
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
@@ -54,6 +62,7 @@
     "dotenv": "^17.2.3",
     "electron-updater": "^6.8.3",
     "express": "^4.21.2",
+    "fuse.js": "^7.5.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "ogl": "^1.0.11",
