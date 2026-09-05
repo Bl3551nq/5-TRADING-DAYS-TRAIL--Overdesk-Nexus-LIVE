@@ -24,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Setup Java 17
@@ -46,6 +46,7 @@ jobs:
       - name: Generate Android Icons & Sync Capacitor
         run: |
           node scripts/generate-android-icons.cjs
+          rm -f android/local.properties
           npx cap sync android
 
       - name: Build Android Debug APK
@@ -53,6 +54,7 @@ jobs:
           cd android
           chmod +x ./gradlew
           ./gradlew assembleDebug --no-daemon
+          cd ..
 
       - name: Rename APK with Version
         run: |
@@ -60,6 +62,7 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           mkdir -p dist-apk
           cp android/app/build/outputs/apk/debug/app-debug.apk dist-apk/Overdesk-Nexus-v${VERSION}-debug.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist-apk/Overdesk-Nexus.apk
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
@@ -69,9 +72,13 @@ jobs:
           if-no-files-found: error
 
       - name: Publish APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          name: Overdesk Nexus v${{ env.VERSION }}
+          draft: false
+          prerelease: false
           files: dist-apk/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
