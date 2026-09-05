@@ -53,7 +53,7 @@ declare global {
         ip?: string;
         error?: string;
       }>;
-      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; isTrial?: boolean; planType?: 'annual' | 'lifetime' | 'trial'; variantName?: string; expiresAt?: number | null; daysRemaining?: number }>;
+      validateLicense: (key: string) => Promise<{ ok: boolean; test?: boolean; error?: string; isTrial?: boolean; planType?: 'annual' | 'lifetime' | 'trial'; variantName?: string; expiresAt?: number | null; daysRemaining?: number; trialExpired?: boolean }>;
       startTrial: () => Promise<{ ok: boolean; isTrial?: boolean; trialStarted?: boolean; trialUsed?: boolean; trialExpired?: boolean; dayNumber?: number; daysLeft?: number; hoursLeft?: number; trialStartDate?: number; error?: string }>;
       closeApp: () => void;
       setHeight: (height: number) => void;
@@ -2721,6 +2721,23 @@ export default function App() {
       const resp = await window.electronAPI.validateLicense(cleaned);
       if (resp.ok) {
         if (resp.isTrial || resp.planType === 'trial') {
+          const deviceTrialAlreadyExpired = Boolean(
+            resp.trialExpired || 
+            trialExpired || 
+            localStorage.getItem('fm_trial_expired') === '1' ||
+            (resp.daysRemaining !== undefined && resp.daysRemaining <= 0)
+          );
+
+          if (deviceTrialAlreadyExpired) {
+            setLicenseError(true);
+            setTrialExpired(true);
+            setLicenseActive(false);
+            setLicenseAPIErrorText('Your 5-day free trial on this device has already expired. Trial keys cannot be reused to restart or extend trials. Please purchase an Annual or Lifetime license at overdesk.store.');
+            localStorage.setItem('fm_trial_expired', '1');
+            localStorage.setItem('fm_trial_used', '1');
+            return;
+          }
+
           setLicenseActive(true);
           setIsTrial(true);
           setTrialStarted(true);
@@ -2733,7 +2750,10 @@ export default function App() {
           localStorage.setItem('fm_license_key', cleaned);
           localStorage.setItem('fm_plan_type', 'trial');
           localStorage.setItem('fm_trial_started', '1');
-          localStorage.setItem('fm_trial_start_time', Date.now().toString());
+          localStorage.setItem('fm_trial_used', '1');
+          if (!localStorage.getItem('fm_trial_start_time')) {
+            localStorage.setItem('fm_trial_start_time', Date.now().toString());
+          }
           playSoundChime('complete');
           return;
         }
@@ -2753,7 +2773,17 @@ export default function App() {
       } else {
         setLicenseError(true);
         const err = resp.error || '';
-        if (err.includes('expired') || err.includes('cannot be reused')) {
+        if (resp.trialExpired || err.includes('trial') || err.includes('expired')) {
+          setTrialExpired(true);
+          setLicenseActive(false);
+          setLicenseAPIErrorText(err || 'Your free trial has already been used. Please purchase a license to continue.');
+          try {
+            const updated = Array.from(new Set([...expiredKeys, cleaned.toUpperCase()]));
+            localStorage.setItem('fm_expired_keys', JSON.stringify(updated));
+            localStorage.setItem('fm_trial_expired', '1');
+            localStorage.setItem('fm_trial_used', '1');
+          } catch (e) {}
+        } else if (err.includes('cannot be reused')) {
           setLicenseAPIErrorText(err || 'This license key has expired and cannot be reused.');
           try {
             const updated = Array.from(new Set([...expiredKeys, cleaned.toUpperCase()]));
@@ -2763,8 +2793,6 @@ export default function App() {
           setLicenseAPIErrorText('This license has been refunded and is no longer valid.');
         } else if (err.includes('already activated') || err.includes('another device')) {
           setLicenseAPIErrorText('This license key is already activated on another device. Contact support to transfer.');
-        } else if (err.includes('trial license key has already been used') || err.includes('trial has already been used')) {
-          setLicenseAPIErrorText('Your free trial has already been used. Please purchase a license to continue.');
         } else {
           setLicenseAPIErrorText(resp.error || 'Invalid Key, get key from Gumroad');
         }
@@ -2779,15 +2807,24 @@ export default function App() {
       if (isTrialKey) {
         const isStarted = localStorage.getItem('fm_trial_started') === '1';
         const isUsed = localStorage.getItem('fm_trial_used') === '1' || isStarted;
+        const isExpired = localStorage.getItem('fm_trial_expired') === '1' || trialExpired;
+        const startTimeStr = localStorage.getItem('fm_trial_start_time');
+        const startTime = startTimeStr ? parseInt(startTimeStr, 10) : 0;
+        const has5DaysPassed = startTime > 0 && (Date.now() - startTime >= 5 * 24 * 60 * 60 * 1000);
+
         let expiredKeysList: string[] = [];
         try {
           expiredKeysList = JSON.parse(localStorage.getItem('fm_expired_keys') || '[]');
         } catch (e) {}
 
-        if (isUsed || expiredKeysList.includes(upperKey)) {
+        if (isExpired || isUsed || has5DaysPassed || expiredKeysList.includes(upperKey)) {
           setLicenseError(true);
-          setLicenseAPIErrorText('This trial license key has expired. Please purchase an Annual or Lifetime license at overdesk.store.');
-          setTimeout(() => setLicenseError(false), 3000);
+          setTrialExpired(true);
+          setLicenseActive(false);
+          localStorage.setItem('fm_trial_expired', '1');
+          localStorage.setItem('fm_trial_used', '1');
+          setLicenseAPIErrorText('Your 5-day free trial on this device has already expired. Trial keys cannot be reused to restart or extend trials. Please purchase an Annual or Lifetime license at overdesk.store.');
+          setTimeout(() => setLicenseError(false), 4000);
           return;
         }
 

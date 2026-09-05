@@ -21,7 +21,7 @@
     "android:icons": "node scripts/generate-android-icons.cjs",
     "android:sync": "npm run build && npm run android:icons && npx cap sync android",
     "android:open": "npx cap open android",
-    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug",
+    "android:build": "npm run android:sync && cd android && ./gradlew assembleDebug && cd .. && mkdir -p apk && cp android/app/build/outputs/apk/debug/app-debug.apk apk/Overdesk-Nexus.apk && cp android/app/build/outputs/apk/debug/app-debug.apk apk/Overdesk-Nexus-debug.apk",
     "android:release": "npm run android:sync && cd android && ./gradlew assembleRelease"
   },
   "build": {

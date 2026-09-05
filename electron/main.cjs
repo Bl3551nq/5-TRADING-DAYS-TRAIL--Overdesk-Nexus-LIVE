@@ -78,11 +78,21 @@ function readConfig() {
 
 // Helper to write config
 let writeTimeout = null;
-function writeConfig(data) {
+function writeConfig(data, immediate = false) {
   try {
     const current = readConfig();
     configCache = { ...current, ...data };
     
+    if (immediate) {
+      if (writeTimeout) clearTimeout(writeTimeout);
+      try {
+        fs.writeFileSync(configPath, JSON.stringify(configCache, null, 2), 'utf8');
+      } catch (err) {
+        console.error('Error writing config immediately:', err);
+      }
+      return;
+    }
+
     if (writeTimeout) clearTimeout(writeTimeout);
     writeTimeout = setTimeout(() => {
       try {
@@ -648,6 +658,7 @@ ipcMain.handle('check-license', (event, simDay) => {
       const trialExpiresAt = storedExpiresAt || (activatedAt > 0 ? (activatedAt + FIVE_DAYS_MS) : 0);
 
       if (trialExpiresAt > 0 && Date.now() >= trialExpiresAt) {
+        clearEncryptedLicense();
         const expiredKey = config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey || '';
         const currentExpiredKeys = config.expiredLicenseKeys || [];
         const currentUsedTrial = config.usedTrialKeys || [];
@@ -658,9 +669,12 @@ ipcMain.handle('check-license', (event, simDay) => {
           licenseValid: false,
           licenseExpired: true,
           licenseKey: null,
+          trialExpired: true,
+          permanentlyLocked: true,
+          trialUsed: true,
           expiredLicenseKeys: updatedExpiredKeys,
           usedTrialKeys: updatedUsedTrial
-        });
+        }, true);
 
         if (sysTrial) {
           sysTrial.licenseValid = false;
@@ -668,9 +682,10 @@ ipcMain.handle('check-license', (event, simDay) => {
           sysTrial.licenseKey = null;
           sysTrial.expiredLicenseKeys = updatedExpiredKeys;
           sysTrial.usedTrialKeys = updatedUsedTrial;
-          try {
-            fs.writeFileSync(SYS_TRIAL_FILE, JSON.stringify(sysTrial, null, 2), 'utf8');
-          } catch (e) {}
+          sysTrial.trialExpired = true;
+          sysTrial.permanentlyLocked = true;
+          sysTrial.trialUsed = true;
+          saveSystemTrialRecord(sysTrial);
         }
 
         return {
@@ -782,11 +797,23 @@ ipcMain.handle('check-license', (event, simDay) => {
   const elapsedDaysDecimal = elapsedMs / (1000 * 60 * 60 * 24);
   const isExpired = trial.trialExpired || trial.permanentlyLocked || elapsedDaysDecimal >= 5;
 
-  if (isExpired && (!trial.trialExpired || !trial.permanentlyLocked)) {
+  if (isExpired) {
+    clearEncryptedLicense();
     trial.trialExpired = true;
     trial.permanentlyLocked = true;
     trial.trialUsed = true;
+    trial.licenseValid = false;
+    trial.licenseExpired = true;
+    trial.licenseKey = null;
     saveSystemTrialRecord(trial);
+    writeConfig({
+      licenseValid: false,
+      licenseExpired: true,
+      licenseKey: null,
+      trialExpired: true,
+      permanentlyLocked: true,
+      trialUsed: true
+    }, true);
   }
 
   const dayNumber = isExpired ? 6 : Math.min(5, Math.floor(elapsedDaysDecimal) + 1);
@@ -854,6 +881,17 @@ function readEncryptedLicense() {
   } catch (err) {
     console.error('Error reading encrypted license:', err);
     return null;
+  }
+}
+
+function clearEncryptedLicense() {
+  try {
+    const licenseFilePath = path.join(app.getPath('userData'), 'license.enc');
+    if (fs.existsSync(licenseFilePath)) {
+      fs.unlinkSync(licenseFilePath);
+    }
+  } catch (err) {
+    console.error('Error clearing encrypted license:', err);
   }
 }
 
@@ -1081,18 +1119,106 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
         const currentConfig = readConfig();
         const usedTrialKeys = currentConfig.usedTrialKeys || [];
         const expiredKeys = currentConfig.expiredLicenseKeys || [];
+        const sysTrial = getSystemTrialRecord();
 
         if (planType === 'trial') {
-          if (usedTrialKeys.includes(licenseKey) || usedTrialKeys.includes(normalizedKey)) {
-            return { ok: false, error: 'This trial license key has already been used and expired. Please purchase an Annual or Lifetime license at overdesk.store.' };
+          // 1. Check if this specific trial key was already used or blacklisted
+          if (usedTrialKeys.includes(licenseKey) || usedTrialKeys.includes(normalizedKey) || expiredKeys.includes(licenseKey) || expiredKeys.includes(normalizedKey)) {
+            return { ok: false, trialExpired: true, error: 'This trial license key has already been used and expired. Please purchase an Annual or Lifetime license at overdesk.store.' };
           }
+
+          // 2. Check if the purchase itself is older than 5 days
           if (data.purchase && data.purchase.created_at) {
             const pTime = new Date(data.purchase.created_at).getTime();
             if (!isNaN(pTime) && (Date.now() - pTime >= 5 * 24 * 60 * 60 * 1000)) {
               const updatedExpired = Array.from(new Set([...expiredKeys, ...usedTrialKeys, normalizedKey, licenseKey]));
-              writeConfig({ expiredLicenseKeys: updatedExpired, usedTrialKeys: updatedExpired });
-              return { ok: false, error: 'This trial license key has expired. Please purchase an Annual or Lifetime license at overdesk.store.' };
+              writeConfig({ expiredLicenseKeys: updatedExpired, usedTrialKeys: updatedExpired, trialExpired: true, trialUsed: true });
+              return { ok: false, trialExpired: true, error: 'This trial license key has expired. Please purchase an Annual or Lifetime license at overdesk.store.' };
             }
+          }
+
+          // 3. Check if this device has ALREADY used, expired, or completed its 5-day trial!
+          // A machine is strictly allowed ONE 5-day trial. Entering a new trial key must NOT grant another 5 days!
+          const isDeviceTrialExpired = Boolean(
+            sysTrial.trialExpired || 
+            sysTrial.permanentlyLocked || 
+            sysTrial.licenseExpired ||
+            currentConfig.trialExpired || 
+            currentConfig.permanentlyLocked ||
+            currentConfig.licenseExpired ||
+            (usedTrialKeys.length > 0) ||
+            (expiredKeys.length > 0) ||
+            (currentConfig.trialRecord && (
+              currentConfig.trialRecord.trialExpired || 
+              currentConfig.trialRecord.permanentlyLocked ||
+              currentConfig.trialRecord.trialUsed ||
+              (currentConfig.trialRecord.trialStartDate && (Date.now() - currentConfig.trialRecord.trialStartDate >= 5 * 24 * 60 * 60 * 1000))
+            )) ||
+            (sysTrial.trialStarted && sysTrial.trialStartDate && (Date.now() - sysTrial.trialStartDate >= 5 * 24 * 60 * 60 * 1000)) ||
+            (sysTrial.trialUsed && sysTrial.trialStartDate && (Date.now() - sysTrial.trialStartDate >= 5 * 24 * 60 * 60 * 1000))
+          );
+
+          if (isDeviceTrialExpired) {
+            clearEncryptedLicense();
+            sysTrial.trialExpired = true;
+            sysTrial.permanentlyLocked = true;
+            sysTrial.trialUsed = true;
+            sysTrial.licenseValid = false;
+            sysTrial.licenseExpired = true;
+            sysTrial.licenseKey = null;
+            saveSystemTrialRecord(sysTrial);
+
+            const updatedExpired = Array.from(new Set([...expiredKeys, ...usedTrialKeys, normalizedKey, licenseKey]));
+            writeConfig({ 
+              licenseValid: false, 
+              licenseExpired: true, 
+              licenseKey: null,
+              trialExpired: true, 
+              permanentlyLocked: true, 
+              trialUsed: true, 
+              expiredLicenseKeys: updatedExpired, 
+              usedTrialKeys: updatedExpired 
+            }, true);
+
+            return { 
+              ok: false, 
+              trialExpired: true, 
+              error: 'Your 5-day free trial on this device has already expired. Trial keys cannot be reused to restart or extend trials. Please purchase an Annual or Lifetime license at overdesk.store to continue.' 
+            };
+          }
+
+          // 4. If device is within an active trial period, maintain original start date
+          const originalStartTime = (sysTrial.trialStarted && sysTrial.trialStartDate) ? sysTrial.trialStartDate : Date.now();
+          const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+          const trialExpiresAt = originalStartTime + FIVE_DAYS_MS;
+
+          if (Date.now() >= trialExpiresAt) {
+            clearEncryptedLicense();
+            sysTrial.trialExpired = true;
+            sysTrial.permanentlyLocked = true;
+            sysTrial.trialUsed = true;
+            sysTrial.licenseValid = false;
+            sysTrial.licenseExpired = true;
+            sysTrial.licenseKey = null;
+            saveSystemTrialRecord(sysTrial);
+
+            const updatedExpired = Array.from(new Set([...expiredKeys, ...usedTrialKeys, normalizedKey, licenseKey]));
+            writeConfig({ 
+              licenseValid: false, 
+              licenseExpired: true, 
+              licenseKey: null,
+              trialExpired: true, 
+              permanentlyLocked: true, 
+              trialUsed: true, 
+              expiredLicenseKeys: updatedExpired, 
+              usedTrialKeys: updatedExpired 
+            }, true);
+
+            return {
+              ok: false,
+              trialExpired: true,
+              error: 'Your 5-day trial period has expired. Please purchase an Annual or Lifetime license at overdesk.store.'
+            };
           }
         }
 
@@ -1117,15 +1243,21 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
           }
         }
 
-        const nowTime = (storedLicense && storedLicense.licenseKey && storedLicense.licenseKey.toUpperCase() === normalizedKey && storedLicense.activatedAt)
-          ? storedLicense.activatedAt
-          : Date.now();
-        const updatedUsedTrialKeys = planType === 'trial' ? Array.from(new Set([...usedTrialKeys, licenseKey, normalizedKey])) : usedTrialKeys;
+        const isTrial = planType === 'trial';
+        const originalTrialStart = (sysTrial.trialStarted && sysTrial.trialStartDate) ? sysTrial.trialStartDate : Date.now();
+        const nowTime = isTrial 
+          ? originalTrialStart 
+          : ((storedLicense && storedLicense.licenseKey && storedLicense.licenseKey.toUpperCase() === normalizedKey && storedLicense.activatedAt)
+              ? storedLicense.activatedAt
+              : Date.now());
+
+        const updatedUsedTrialKeys = isTrial ? Array.from(new Set([...usedTrialKeys, licenseKey, normalizedKey])) : usedTrialKeys;
 
         writeEncryptedLicense(licenseKey, currentMachineId, planType, variantName, nowTime);
         writeConfig({ 
           licenseValid: true, 
-          licenseExpired: false,
+          licenseExpired: false, 
+          trialExpired: false,
           licenseKey, 
           planType, 
           variantName, 
@@ -1134,23 +1266,41 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
         });
 
         try {
-          const sysTrial = getSystemTrialRecord();
-          sysTrial.licenseValid = true;
-          sysTrial.licenseKey = licenseKey;
-          sysTrial.planType = planType;
-          sysTrial.variantName = variantName;
-          sysTrial.activatedAt = nowTime;
-          sysTrial.usedTrialKeys = updatedUsedTrialKeys;
-          fs.writeFileSync(SYS_TRIAL_FILE, JSON.stringify(sysTrial, null, 2), 'utf8');
+          if (isTrial) {
+            sysTrial.licenseValid = true;
+            sysTrial.licenseExpired = false;
+            sysTrial.trialExpired = false;
+            sysTrial.licenseKey = licenseKey;
+            sysTrial.planType = planType;
+            sysTrial.variantName = variantName;
+            sysTrial.activatedAt = nowTime;
+            sysTrial.trialStarted = true;
+            sysTrial.trialUsed = true;
+            sysTrial.trialStartDate = originalTrialStart;
+            sysTrial.usedTrialKeys = updatedUsedTrialKeys;
+            saveSystemTrialRecord(sysTrial);
+          } else {
+            // Paid License (Annual or Lifetime)
+            sysTrial.licenseValid = true;
+            sysTrial.licenseExpired = false;
+            sysTrial.trialExpired = false;
+            sysTrial.permanentlyLocked = false;
+            sysTrial.licenseKey = licenseKey;
+            sysTrial.planType = planType;
+            sysTrial.variantName = variantName;
+            sysTrial.activatedAt = nowTime;
+            saveSystemTrialRecord(sysTrial);
+          }
         } catch (e) {}
 
+        const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
         return { 
           ok: true, 
-          isTrial: planType === 'trial', 
+          isTrial, 
           planType, 
           variantName,
-          expiresAt: planType === 'trial' ? (nowTime + 5 * 24 * 60 * 60 * 1000) : (planType === 'annual' ? (nowTime + 365 * 24 * 60 * 60 * 1000) : null),
-          daysRemaining: planType === 'trial' ? Math.max(1, Math.ceil(((nowTime + 5 * 24 * 60 * 60 * 1000) - Date.now()) / (24 * 60 * 60 * 1000))) : undefined
+          expiresAt: isTrial ? (originalTrialStart + FIVE_DAYS_MS) : (planType === 'annual' ? (nowTime + 365 * 24 * 60 * 60 * 1000) : null),
+          daysRemaining: isTrial ? Math.max(1, Math.ceil(((originalTrialStart + FIVE_DAYS_MS) - Date.now()) / (24 * 60 * 60 * 1000))) : undefined
         };
       }
     }
