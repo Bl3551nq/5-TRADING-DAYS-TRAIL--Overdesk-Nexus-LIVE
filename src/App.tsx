@@ -29,9 +29,14 @@ const PRESET_WALLPAPERS = [
   { id: 'moon_trader_candlesticks', name: 'Moon Trader Charts', url: wallpaperMoonTrader },
 ];
 
-// Declaration to access global Electron API from preload script
+// Declaration to access global Electron API and Android Overlay Bridge
 declare global {
   interface Window {
+    AndroidOverlay?: {
+      enterOverlayMode: () => void;
+      isAndroid: () => boolean;
+      supportsPip: () => boolean;
+    };
     electronAPI?: {
       checkLicense: (simDay?: number) => Promise<{
         ok: boolean;
@@ -598,6 +603,24 @@ export default function App() {
     }
   });
   const [minimized, setMinimized] = useState<boolean>(false);
+  const [isPipMode, setIsPipMode] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handlePipChange = (e: any) => {
+      const inPip = Boolean(e.detail?.isInPip);
+      setIsPipMode(inPip);
+    };
+    window.addEventListener('pipmodechange', handlePipChange);
+    return () => window.removeEventListener('pipmodechange', handlePipChange);
+  }, []);
+
+  const triggerOverlayMode = useCallback(() => {
+    if (window.AndroidOverlay?.enterOverlayMode) {
+      window.AndroidOverlay.enterOverlayMode();
+    } else if (window.electronAPI?.setAlwaysOnTop) {
+      window.electronAPI.setAlwaysOnTop(true);
+    }
+  }, []);
 
   // Modular Modes Storage
   const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
@@ -4048,6 +4071,51 @@ export default function App() {
                 </svg>
               )}
             </button>
+
+            {/* Overlay / Float Over Apps button */}
+            <button
+              className={`overlay-toggle ${isPipMode ? 'on' : ''}`}
+              id="overlay-toggle"
+              onClick={triggerOverlayMode}
+              title="Overlay Over Other Apps (Float Over Charts & Apps)"
+              style={{
+                background: isPipMode 
+                  ? (isLight ? 'rgba(2, 132, 199, 0.2)' : 'rgba(56, 189, 248, 0.25)') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.08)'),
+                border: isPipMode
+                  ? `1px solid ${isLight ? 'rgba(2, 132, 199, 0.45)' : 'rgba(56, 189, 248, 0.5)'}`
+                  : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)'}`,
+                borderRadius: '50%',
+                width: '26px',
+                height: '26px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                color: isPipMode 
+                  ? (isLight ? '#0284c7' : '#38bdf8') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)'),
+                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
+                padding: 0,
+                margin: 0,
+                boxShadow: 'none',
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.transform = 'scale(1.1)';
+                e.currentTarget.style.color = isLight ? '#0284c7' : '#38bdf8';
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.transform = 'scale(1)';
+                e.currentTarget.style.color = isPipMode 
+                  ? (isLight ? '#0284c7' : '#38bdf8') 
+                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)');
+              }}
+            >
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="2" y="4" width="20" height="16" rx="3" />
+                <rect x="11" y="10" width="8" height="7" rx="1.5" fill="currentColor" fillOpacity="0.25" stroke="currentColor" strokeWidth="1.8" />
+              </svg>
+            </button>
           </div>
 
           {/* Center Minimize Pill */}
@@ -4451,6 +4519,41 @@ export default function App() {
                   particleCount={12}
                   animationTime={450}
                 />
+              </div>
+
+              {/* Overlay Over Other Apps (Floating PiP Mode) */}
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                  Floating Overlay (Draw Over Apps)
+                </span>
+                <button
+                  type="button"
+                  onClick={triggerOverlayMode}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '8px',
+                    padding: '8px 12px',
+                    borderRadius: '8px',
+                    fontSize: '11px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    background: isPipMode ? 'rgba(2, 132, 199, 0.2)' : 'rgba(56, 189, 248, 0.12)',
+                    border: '1px solid rgba(56, 189, 248, 0.35)',
+                    color: isLight ? '#0284c7' : '#38bdf8',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="4" width="20" height="16" rx="3" />
+                    <rect x="11" y="10" width="8" height="7" rx="1.5" fill="currentColor" fillOpacity="0.25" stroke="currentColor" strokeWidth="1.8" />
+                  </svg>
+                  {isPipMode ? 'Active: Floating Over Apps' : 'Float Over Other Apps (PiP Overlay)'}
+                </button>
+                <span style={{ fontSize: '9px', color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', lineHeight: 1.3 }}>
+                  Overdesk Nexus floats transparently over TradingView, MT4/5, or any other app just like desktop. On Android, switching apps or pressing Home will also float automatically.
+                </span>
               </div>
 
               {/* Voice Commands Setting */}
