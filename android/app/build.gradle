@@ -26,6 +26,19 @@ android {
         sourceCompatibility JavaVersion.VERSION_21
         targetCompatibility JavaVersion.VERSION_21
     }
+    packagingOptions {
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}', 'META-INF/DEPENDENCIES', 'META-INF/NOTICE', 'META-INF/LICENSE']
+        }
+    }
+}
+
+configurations.all {
+    resolutionStrategy {
+        force "org.apache.cordova:framework:$rootProject.ext.cordovaAndroidVersion"
+        force "androidx.appcompat:appcompat:$rootProject.ext.androidxAppCompatVersion"
+        force "androidx.core:core:$rootProject.ext.androidxCoreVersion"
+    }
 }
 
 repositories {
