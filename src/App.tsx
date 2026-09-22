@@ -33,9 +33,11 @@ const PRESET_WALLPAPERS = [
 declare global {
   interface Window {
     AndroidOverlay?: {
-      enterOverlayMode: () => void;
-      isAndroid: () => boolean;
-      supportsPip: () => boolean;
+      updateBounds?: (left: number, top: number, width: number, height: number) => void;
+      moveWindow?: (dx: number, dy: number) => void;
+      enterOverlayMode?: () => void;
+      isAndroid?: () => boolean;
+      supportsPip?: () => boolean;
     };
     electronAPI?: {
       checkLicense: (simDay?: number) => Promise<{
@@ -603,24 +605,6 @@ export default function App() {
     }
   });
   const [minimized, setMinimized] = useState<boolean>(false);
-  const [isPipMode, setIsPipMode] = useState<boolean>(false);
-
-  useEffect(() => {
-    const handlePipChange = (e: any) => {
-      const inPip = Boolean(e.detail?.isInPip);
-      setIsPipMode(inPip);
-    };
-    window.addEventListener('pipmodechange', handlePipChange);
-    return () => window.removeEventListener('pipmodechange', handlePipChange);
-  }, []);
-
-  const triggerOverlayMode = useCallback(() => {
-    if (window.AndroidOverlay?.enterOverlayMode) {
-      window.AndroidOverlay.enterOverlayMode();
-    } else if (window.electronAPI?.setAlwaysOnTop) {
-      window.electronAPI.setAlwaysOnTop(true);
-    }
-  }, []);
 
   // Modular Modes Storage
   const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
@@ -1935,6 +1919,19 @@ export default function App() {
     while (curr && curr !== cardRef.current) {
       if (
         curr.classList?.contains('no-drag') ||
+        // Checklist area is strictly immovable so scrolling checklist never drags the app:
+        curr.closest('.scroll-area') ||
+        curr.closest('.options') ||
+        curr.closest('#options-list') ||
+        curr.closest('.option') ||
+        curr.closest('.full-mode-wrapper') ||
+        curr.closest('.full-mode-card') ||
+        curr.closest('.full-mode-textarea') ||
+        curr.closest('.column-navigation') ||
+        curr.closest('.reset-wrap') ||
+        curr.closest('.reset-btn') ||
+        curr.closest('.calendar-events-scroll') ||
+        // Interactive form controls & buttons:
         ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT', 'A'].includes(curr.tagName) ||
         curr.closest('button') ||
         curr.closest('input') ||
@@ -1946,22 +1943,19 @@ export default function App() {
         curr.closest('.settings-body') ||
         curr.closest('.setting-section') ||
         curr.closest('.wallpaper-opacity-slider') ||
-        curr.closest('.countdown-timer') ||
         curr.closest('.countdown-timer-edit') ||
-        curr.closest('#countdown-timer-widget') ||
         curr.closest('.close-btn') ||
         curr.closest('.add-btn') ||
         curr.closest('.theme-switch') ||
         curr.closest('.minimize-pill') ||
-        curr.closest('.minimize-bar') ||
         curr.closest('.resize-handle') ||
         curr.closest('.bottom-resize-handle') ||
-        curr.closest('.reset-wrap') ||
         curr.closest('.color-swatch') ||
         curr.closest('.color-custom-wrap') ||
         curr.closest('.picker-grid') ||
         curr.closest('.check-box') ||
-        curr.closest('.del-btn')
+        curr.closest('.del-btn') ||
+        curr.closest('.reorder-item-btn')
       ) {
         return false;
       }
@@ -2041,8 +2035,17 @@ export default function App() {
     const target = e.target as HTMLElement;
     if (!isDraggable(target)) return;
 
-    const startX = e.clientX;
-    const startY = e.clientY;
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch (_) {}
+
+    const startClientX = e.clientX;
+    const startClientY = e.clientY;
+    let lastScreenX = (typeof e.screenX === 'number' && e.screenX !== 0) ? e.screenX : e.clientX;
+    let lastScreenY = (typeof e.screenY === 'number' && e.screenY !== 0) ? e.screenY : e.clientY;
+    let lastClientX = e.clientX;
+    let lastClientY = e.clientY;
+
     const startTX = translate.x;
     const startTY = translate.y;
 
@@ -2053,11 +2056,16 @@ export default function App() {
     let isDraggingActive = false;
 
     const onPointerMove = (moveEv: PointerEvent) => {
-      const dx = moveEv.clientX - startX;
-      const dy = moveEv.clientY - startY;
+      const curScreenX = (typeof moveEv.screenX === 'number' && moveEv.screenX !== 0) ? moveEv.screenX : moveEv.clientX;
+      const curScreenY = (typeof moveEv.screenY === 'number' && moveEv.screenY !== 0) ? moveEv.screenY : moveEv.clientY;
+
+      const screenDx = curScreenX - lastScreenX;
+      const screenDy = curScreenY - lastScreenY;
+      const totalClientDx = moveEv.clientX - startClientX;
+      const totalClientDy = moveEv.clientY - startClientY;
 
       if (!isDraggingActive) {
-        if (Math.hypot(dx, dy) >= 3) {
+        if (Math.hypot(screenDx, screenDy) >= 2 || Math.hypot(totalClientDx, totalClientDy) >= 2) {
           isDraggingActive = true;
           setIsGripped(true);
           dragPointerRef.current.dragging = true;
@@ -2066,13 +2074,66 @@ export default function App() {
         }
       }
 
-      setTranslate({
-        x: startTX + dx,
-        y: startTY + dy,
-      });
+      if (moveEv.cancelable) {
+        moveEv.preventDefault();
+      }
+
+      if (window.AndroidOverlay?.moveWindow) {
+        const dx = (typeof moveEv.screenX === 'number' && moveEv.screenX !== 0) ? screenDx : (moveEv.clientX - lastClientX);
+        const dy = (typeof moveEv.screenY === 'number' && moveEv.screenY !== 0) ? screenDy : (moveEv.clientY - lastClientY);
+
+        window.AndroidOverlay.moveWindow(dx, dy);
+
+        lastScreenX = curScreenX;
+        lastScreenY = curScreenY;
+        lastClientX = moveEv.clientX;
+        lastClientY = moveEv.clientY;
+      } else {
+        setTranslate({
+          x: startTX + totalClientDx,
+          y: startTY + totalClientDy,
+        });
+      }
     };
 
-    const onPointerUp = () => {
+    const onTouchMove = (touchEv: TouchEvent) => {
+      if (touchEv.touches && touchEv.touches.length > 0) {
+        const t = touchEv.touches[0];
+        const curScreenX = (typeof t.screenX === 'number' && t.screenX !== 0) ? t.screenX : t.clientX;
+        const curScreenY = (typeof t.screenY === 'number' && t.screenY !== 0) ? t.screenY : t.clientY;
+
+        const screenDx = curScreenX - lastScreenX;
+        const screenDy = curScreenY - lastScreenY;
+
+        if (!isDraggingActive) {
+          if (Math.hypot(screenDx, screenDy) >= 2) {
+            isDraggingActive = true;
+            setIsGripped(true);
+            dragPointerRef.current.dragging = true;
+          } else {
+            return;
+          }
+        }
+
+        if (touchEv.cancelable) {
+          touchEv.preventDefault();
+        }
+
+        if (window.AndroidOverlay?.moveWindow) {
+          window.AndroidOverlay.moveWindow(screenDx, screenDy);
+          lastScreenX = curScreenX;
+          lastScreenY = curScreenY;
+        }
+      }
+    };
+
+    const onPointerUp = (upEv?: PointerEvent) => {
+      if (upEv) {
+        try {
+          (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch (_) {}
+      }
+
       if (isDraggingActive) {
         isDraggingActive = false;
         setIsGripped(false);
@@ -2080,21 +2141,31 @@ export default function App() {
         justDraggedRef.current = true;
         setTimeout(() => {
           justDraggedRef.current = false;
-        }, 80);
+        }, 100);
       }
 
       cleanup();
     };
 
+    const onPointerCancel = () => {
+      if (!window.AndroidOverlay) {
+        onPointerUp();
+      }
+    };
+
     const cleanup = () => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('touchmove', onTouchMove);
+      window.removeEventListener('touchend', onPointerUp);
     };
 
-    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp, { passive: true });
-    window.addEventListener('pointercancel', onPointerUp, { passive: true });
+    window.addEventListener('pointercancel', onPointerCancel, { passive: true });
+    window.addEventListener('touchmove', onTouchMove, { passive: false });
+    window.addEventListener('touchend', onPointerUp, { passive: true });
   };
 
   const handleCardPointerMove = () => {
@@ -2386,6 +2457,10 @@ export default function App() {
           h,
           scale,
         });
+      }
+
+      if (window.AndroidOverlay?.updateBounds) {
+        window.AndroidOverlay.updateBounds(rect.left, rect.top, 320, h);
       }
     };
 
@@ -2781,6 +2856,7 @@ export default function App() {
           return;
         }
 
+        // Paid License (Annual or Lifetime): Unlock app immediately!
         setLicenseActive(true);
         setIsTrial(false);
         setTrialExpired(false);
@@ -2790,8 +2866,15 @@ export default function App() {
         setActivePlanType(plan);
         setActiveVariantName(variant);
         setLicenseAPIErrorText('');
+        localStorage.setItem('fm_license_valid', '1');
         localStorage.setItem('fm_license_key', cleaned);
         localStorage.setItem('fm_plan_type', plan);
+        localStorage.setItem('fm_variant_name', variant);
+        localStorage.removeItem('fm_trial_expired');
+        try {
+          const updated = expiredKeys.filter(k => k !== cleaned.toUpperCase());
+          localStorage.setItem('fm_expired_keys', JSON.stringify(updated));
+        } catch (e) {}
         playSoundChime('complete');
       } else {
         setLicenseError(true);
@@ -2821,11 +2904,77 @@ export default function App() {
         }
       }
     } else {
-      // Fallback bypass mode on standard web preview
+      // Direct Gumroad API or Fallback mode on standard web / mobile preview
       const upperKey = cleaned.toUpperCase();
-      const isAnnual = upperKey.includes('ANNUAL') || upperKey.includes('YEAR');
-      const isLifetime = upperKey.includes('LIFETIME') || upperKey.includes('PRO-LIFETIME');
-      const isTrialKey = !isAnnual && !isLifetime;
+      const isExplicitTrial = upperKey.includes('TRIAL') || upperKey.includes('FREE') || upperKey.includes('5DAY') || upperKey.includes('5-DAY');
+      const isExplicitLifetime = upperKey.includes('LIFETIME') || upperKey.includes('PRO-LIFETIME');
+
+      // Attempt direct Gumroad verification from browser/PWA if possible
+      try {
+        const params = new URLSearchParams();
+        params.append('product_id', 'ILe-vFDDL-fYyDeKroOQXw==');
+        params.append('license_key', cleaned);
+        params.append('increment_uses_count', 'false');
+
+        const gRes = await fetch('https://api.gumroad.com/v2/licenses/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+          body: params.toString()
+        });
+
+        if (gRes.ok) {
+          const gData = await gRes.json();
+          if (gData && gData.success) {
+            const rawV = (gData.purchase && (gData.purchase.variant_name || gData.purchase.option)) || '';
+            const vLower = String(rawV).toLowerCase();
+            const price = gData.purchase?.price || 0;
+            const hasSub = Boolean(gData.purchase?.subscription_id);
+            const isRec = Boolean(gData.purchase?.is_recurring_charge || gData.purchase?.recurrence);
+            const isPaid = price > 0 || hasSub || isRec;
+
+            const isLife = vLower.includes('lifetime') || upperKey.includes('LIFETIME');
+            const isAnn = !isLife && (isPaid || hasSub || isRec || vLower.includes('annual') || vLower.includes('year') || upperKey.includes('ANNUAL') || upperKey.includes('YEAR') || !vLower.includes('trial'));
+
+            if (isAnn || isLife) {
+              const plan = isLife ? 'lifetime' : 'annual';
+              const variant = rawV || (isLife ? 'Lifetime Access' : 'Annual Subscription (1 Year)');
+              const now = Date.now();
+              const expiresAt = isAnn ? now + (365 * 24 * 60 * 60 * 1000) : null;
+
+              localStorage.setItem('fm_license_valid', '1');
+              localStorage.setItem('fm_license_key', cleaned);
+              localStorage.setItem('fm_plan_type', plan);
+              localStorage.setItem('fm_variant_name', variant);
+              localStorage.setItem('fm_license_activated_at', now.toString());
+              if (expiresAt) {
+                localStorage.setItem('fm_license_expires_at', expiresAt.toString());
+              } else {
+                localStorage.removeItem('fm_license_expires_at');
+              }
+              localStorage.removeItem('fm_trial_expired');
+              try {
+                const updated = expiredKeys.filter(k => k !== cleaned.toUpperCase());
+                localStorage.setItem('fm_expired_keys', JSON.stringify(updated));
+              } catch (e) {}
+
+              setLicenseActive(true);
+              setIsTrial(false);
+              setTrialExpired(false);
+              setLicenseExpired(false);
+              setActivePlanType(plan);
+              setActiveVariantName(variant);
+              setLicenseAPIErrorText('');
+              playSoundChime('complete');
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        // Continue to offline/heuristic fallback below
+      }
+
+      // Offline/Local Heuristic
+      const isTrialKey = isExplicitTrial;
 
       if (isTrialKey) {
         const isStarted = localStorage.getItem('fm_trial_started') === '1';
@@ -2868,6 +3017,8 @@ export default function App() {
         return;
       }
 
+      // Any non-trial key is treated as an Annual or Lifetime paid license
+      const isAnnual = !isExplicitLifetime;
       const plan = isAnnual ? 'annual' : 'lifetime';
       const variant = isAnnual ? 'Annual Subscription (1 Year)' : 'Lifetime Access';
       const now = Date.now();
@@ -2883,6 +3034,11 @@ export default function App() {
       } else {
         localStorage.removeItem('fm_license_expires_at');
       }
+      localStorage.removeItem('fm_trial_expired');
+      try {
+        const updated = expiredKeys.filter(k => k !== cleaned.toUpperCase());
+        localStorage.setItem('fm_expired_keys', JSON.stringify(updated));
+      } catch (e) {}
 
       setLicenseActive(true);
       setIsTrial(false);
@@ -4071,57 +4227,13 @@ export default function App() {
                 </svg>
               )}
             </button>
-
-            {/* Overlay / Float Over Apps button */}
-            <button
-              className={`overlay-toggle ${isPipMode ? 'on' : ''}`}
-              id="overlay-toggle"
-              onClick={triggerOverlayMode}
-              title="Overlay Over Other Apps (Float Over Charts & Apps)"
-              style={{
-                background: isPipMode 
-                  ? (isLight ? 'rgba(2, 132, 199, 0.2)' : 'rgba(56, 189, 248, 0.25)') 
-                  : (isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.08)'),
-                border: isPipMode
-                  ? `1px solid ${isLight ? 'rgba(2, 132, 199, 0.45)' : 'rgba(56, 189, 248, 0.5)'}`
-                  : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)'}`,
-                borderRadius: '50%',
-                width: '26px',
-                height: '26px',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                color: isPipMode 
-                  ? (isLight ? '#0284c7' : '#38bdf8') 
-                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)'),
-                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)',
-                padding: 0,
-                margin: 0,
-                boxShadow: 'none',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.transform = 'scale(1.1)';
-                e.currentTarget.style.color = isLight ? '#0284c7' : '#38bdf8';
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.transform = 'scale(1)';
-                e.currentTarget.style.color = isPipMode 
-                  ? (isLight ? '#0284c7' : '#38bdf8') 
-                  : (isLight ? 'rgba(0, 0, 0, 0.6)' : 'rgba(255, 255, 255, 0.65)');
-              }}
-            >
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="2" y="4" width="20" height="16" rx="3" />
-                <rect x="11" y="10" width="8" height="7" rx="1.5" fill="currentColor" fillOpacity="0.25" stroke="currentColor" strokeWidth="1.8" />
-              </svg>
-            </button>
           </div>
 
           {/* Center Minimize Pill */}
           <div
             className="minimize-bar"
             onClick={() => {
+              if (justDraggedRef.current) return;
               const nextMinimized = !minimized;
               setMinimized(nextMinimized);
               if (nextMinimized) {
@@ -4173,8 +4285,8 @@ export default function App() {
                 </svg>
               </button>
 
-              {/* Settings Gear Button (Only in What Next or Minimized modes, since Full Mode has it in the Mode row beside "MODE") */}
-              {(isWhatNextActive || minimized) && (
+              {/* Settings Gear Button (Only in What Next mode when not minimized) */}
+              {(isWhatNextActive && !minimized) && (
                 <button
                   onClick={() => {
                     setSettingsOpen(!settingsOpen);
@@ -4519,41 +4631,6 @@ export default function App() {
                   particleCount={12}
                   animationTime={450}
                 />
-              </div>
-
-              {/* Overlay Over Other Apps (Floating PiP Mode) */}
-              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
-                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
-                  Floating Overlay (Draw Over Apps)
-                </span>
-                <button
-                  type="button"
-                  onClick={triggerOverlayMode}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    padding: '8px 12px',
-                    borderRadius: '8px',
-                    fontSize: '11px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    background: isPipMode ? 'rgba(2, 132, 199, 0.2)' : 'rgba(56, 189, 248, 0.12)',
-                    border: '1px solid rgba(56, 189, 248, 0.35)',
-                    color: isLight ? '#0284c7' : '#38bdf8',
-                    transition: 'all 0.2s ease',
-                  }}
-                >
-                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="2" y="4" width="20" height="16" rx="3" />
-                    <rect x="11" y="10" width="8" height="7" rx="1.5" fill="currentColor" fillOpacity="0.25" stroke="currentColor" strokeWidth="1.8" />
-                  </svg>
-                  {isPipMode ? 'Active: Floating Over Apps' : 'Float Over Other Apps (PiP Overlay)'}
-                </button>
-                <span style={{ fontSize: '9px', color: isLight ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.45)', lineHeight: 1.3 }}>
-                  Overdesk Nexus floats transparently over TradingView, MT4/5, or any other app just like desktop. On Android, switching apps or pressing Home will also float automatically.
-                </span>
               </div>
 
               {/* Voice Commands Setting */}
@@ -6063,7 +6140,9 @@ export default function App() {
 
               return (
                 <div
-                  className="full-mode-wrapper"
+                  className="full-mode-wrapper no-drag"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onTouchStart={(e) => e.stopPropagation()}
                   style={{
                     height: `${activeScrollAreaHeight}px`,
                     display: 'flex',
@@ -6074,6 +6153,7 @@ export default function App() {
                     width: '100%',
                     boxSizing: 'border-box',
                     padding: '0',
+                    touchAction: 'pan-y',
                   }}
                 >
                   {/* Text area without container frame */}
@@ -6358,12 +6438,16 @@ export default function App() {
 
             return (
               <div
-                className={`scroll-area ${isChecklistScrolling ? 'is-scrolling' : ''}`}
+                className={`scroll-area no-drag ${isChecklistScrolling ? 'is-scrolling' : ''}`}
                 onScroll={handleChecklistScroll}
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 ref={checklistScrollRef}
                 style={{
                   height: `${activeScrollAreaHeight}px`,
                   maxHeight: `${activeScrollAreaHeight}px`,
+                  touchAction: 'pan-y',
+                  overscrollBehavior: 'contain',
                 }}
               >
                 <ul className="options" id="options-list">
@@ -6553,8 +6637,12 @@ export default function App() {
         })()}
 
           {/* Reset tab-checkboxes trigger */}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '2px' }}>
-            <div className="reset-wrap font-sans" onClick={triggerResetChecklist} style={{ userSelect: 'none', margin: 0 }}>
+          <div
+            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: '2px' }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+          >
+            <div className="reset-wrap font-sans no-drag" onClick={triggerResetChecklist} style={{ userSelect: 'none', margin: 0 }}>
               <button className="reset-btn" tabIndex={-1}>
                 <svg viewBox="0 0 24 24">
                   <polyline points="1 4 1 10 7 10" />

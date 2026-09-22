@@ -894,6 +894,7 @@ body.editing .icon-btn::after {
   scroll-behavior: smooth;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-y !important;
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;
 }
@@ -911,6 +912,7 @@ body.editing .icon-btn::after {
   position: relative;
   z-index: 2;
   padding: 2px 0;
+  touch-action: pan-y !important;
 }
 .options.switching {
   opacity: 0;
@@ -935,6 +937,7 @@ body.editing .icon-btn::after {
   margin-bottom: 7px;
   position: relative;
   z-index: 3;
+  touch-action: pan-y !important;
 }
 .card.light .option {
   background: rgba(255, 255, 255, 0.55);
@@ -2102,10 +2105,12 @@ body.animations-disabled *::after {
 
 .full-mode-wrapper {
   animation: fadeIn 0.2s ease-out;
+  touch-action: pan-y !important;
 }
 
 .full-mode-card {
   transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  touch-action: pan-y !important;
 }
 
 .full-mode-text {

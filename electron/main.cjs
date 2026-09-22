@@ -631,16 +631,26 @@ ipcMain.handle('check-license', (event, simDay) => {
 
   // If activated with a paid or trial key
   if (isActivated) {
-    const isTrialKey = savedPlanType === 'trial' || 
+    const isExplicitAnnual = savedPlanType === 'annual';
+    const isExplicitLifetime = savedPlanType === 'lifetime';
+    const isExplicitTrial = savedPlanType === 'trial';
+
+    const isLifetime = isExplicitLifetime || (!isExplicitTrial && !isExplicitAnnual && savedVariantName.toLowerCase().includes('lifetime'));
+    const isAnnual = isExplicitAnnual || (!isExplicitTrial && !isLifetime && (
+      savedVariantName.toLowerCase().includes('annual') || 
+      savedVariantName.toLowerCase().includes('yearly') || 
+      savedVariantName.toLowerCase().includes('year') || 
+      savedVariantName.toLowerCase().includes('subscription')
+    ));
+    const isTrialKey = !isLifetime && !isAnnual && (
+      isExplicitTrial ||
       savedVariantName.toLowerCase().includes('trial') || 
       savedVariantName.toLowerCase().includes('trail') || 
       savedVariantName.toLowerCase().includes('5-day') || 
       savedVariantName.toLowerCase().includes('5 day') || 
       savedVariantName.toLowerCase().includes('5-trading') || 
-      savedVariantName.toLowerCase().includes('free');
-
-    const isAnnual = !isTrialKey && (savedPlanType === 'annual' || savedVariantName.toLowerCase().includes('annual') || savedVariantName.toLowerCase().includes('year'));
-    const isLifetime = !isTrialKey && !isAnnual && (savedPlanType === 'lifetime' || savedVariantName.toLowerCase().includes('lifetime'));
+      savedVariantName.toLowerCase().includes('free')
+    );
 
     if (isLifetime) {
       // Lifetime License: NEVER expires, NEVER locks!
@@ -650,6 +660,76 @@ ipcMain.handle('check-license', (event, simDay) => {
         licenseValid: true,
         planType: 'lifetime',
         variantName: savedVariantName || 'Lifetime Access',
+        key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
+      };
+    } else if (isAnnual) {
+      // Annual Plan: Expiration is 365 days from activation
+      const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+      let expiresAt = storedExpiresAt;
+      // If storedExpiresAt is missing or was inherited from an old 5-day trial (i.e. < 30 days from activation), heal it to 1 full year!
+      if (!expiresAt || (activatedAt > 0 && expiresAt < activatedAt + (30 * 24 * 60 * 60 * 1000))) {
+        expiresAt = (activatedAt > 0 ? activatedAt : Date.now()) + ONE_YEAR_MS;
+        writeConfig({ 
+          expiresAt, 
+          planType: 'annual', 
+          licenseValid: true, 
+          licenseExpired: false, 
+          trialExpired: false, 
+          permanentlyLocked: false 
+        });
+        if (sysTrial) {
+          sysTrial.expiresAt = expiresAt;
+          sysTrial.planType = 'annual';
+          sysTrial.trialExpired = false;
+          sysTrial.permanentlyLocked = false;
+          sysTrial.licenseValid = true;
+          sysTrial.licenseExpired = false;
+          saveSystemTrialRecord(sysTrial);
+        }
+      }
+
+      if (expiresAt && Date.now() >= expiresAt) {
+        // Annual license has actually expired after 365 days
+        const expiredKey = config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey || '';
+        const currentExpiredKeys = config.expiredLicenseKeys || [];
+        const updatedExpiredKeys = expiredKey ? Array.from(new Set([...currentExpiredKeys, expiredKey.toUpperCase(), expiredKey])) : currentExpiredKeys;
+
+        writeConfig({
+          licenseValid: false,
+          licenseExpired: true,
+          licenseKey: null,
+          expiredLicenseKeys: updatedExpiredKeys
+        });
+
+        if (sysTrial) {
+          sysTrial.licenseValid = false;
+          sysTrial.licenseExpired = true;
+          sysTrial.licenseKey = null;
+          sysTrial.expiredLicenseKeys = updatedExpiredKeys;
+          saveSystemTrialRecord(sysTrial);
+        }
+
+        return {
+          ok: false,
+          isTrial: false,
+          licenseValid: false,
+          licenseExpired: true,
+          planType: 'annual',
+          expiresAt,
+          error: 'Your annual license subscription has expired. Please enter a valid license key or purchase a new one at overdesk.store.'
+        };
+      }
+
+      const daysRemaining = Math.max(1, Math.ceil((expiresAt - Date.now()) / (24 * 60 * 60 * 1000)));
+      return {
+        ok: true,
+        isTrial: false,
+        licenseValid: true,
+        licenseExpired: false,
+        planType: 'annual',
+        variantName: savedVariantName || 'Annual Subscription (1 Year)',
+        expiresAt,
+        daysRemaining,
         key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
       };
     } else if (isTrialKey) {
@@ -713,18 +793,10 @@ ipcMain.handle('check-license', (event, simDay) => {
         key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
       };
     } else {
-      // Subscription / Annual / Dated Plan: Calculate expiration
-      let expiresAt = storedExpiresAt;
-      if (!expiresAt && activatedAt > 0) {
-        if (savedPlanType === 'annual') {
-          expiresAt = activatedAt + (365 * 24 * 60 * 60 * 1000);
-        } else if (savedPlanType === 'monthly') {
-          expiresAt = activatedAt + (30 * 24 * 60 * 60 * 1000);
-        }
-      }
+      // General subscription fallback
+      let expiresAt = storedExpiresAt || (activatedAt > 0 ? (activatedAt + (365 * 24 * 60 * 60 * 1000)) : (Date.now() + 365 * 24 * 60 * 60 * 1000));
 
       if (expiresAt && Date.now() >= expiresAt) {
-        // License EXPIRED! Lock app back to license page & blacklist this expired key
         const expiredKey = config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey || '';
         const currentExpiredKeys = config.expiredLicenseKeys || [];
         const updatedExpiredKeys = expiredKey ? Array.from(new Set([...currentExpiredKeys, expiredKey.toUpperCase(), expiredKey])) : currentExpiredKeys;
@@ -741,9 +813,7 @@ ipcMain.handle('check-license', (event, simDay) => {
           sysTrial.licenseExpired = true;
           sysTrial.licenseKey = null;
           sysTrial.expiredLicenseKeys = updatedExpiredKeys;
-          try {
-            fs.writeFileSync(SYS_TRIAL_FILE, JSON.stringify(sysTrial, null, 2), 'utf8');
-          } catch (e) {}
+          saveSystemTrialRecord(sysTrial);
         }
 
         return {
@@ -751,7 +821,7 @@ ipcMain.handle('check-license', (event, simDay) => {
           isTrial: false,
           licenseValid: false,
           licenseExpired: true,
-          planType: savedPlanType,
+          planType: savedPlanType || 'annual',
           expiresAt,
           error: 'Your license subscription has expired. Please enter a valid license key or purchase a new one at overdesk.store.'
         };
@@ -762,8 +832,8 @@ ipcMain.handle('check-license', (event, simDay) => {
         isTrial: false,
         licenseValid: true,
         licenseExpired: false,
-        planType: savedPlanType,
-        variantName: savedVariantName,
+        planType: savedPlanType || 'annual',
+        variantName: savedVariantName || 'Annual Subscription',
         expiresAt,
         key: config.licenseKey || encrypted?.licenseKey || sysTrial.licenseKey
       };
@@ -904,33 +974,12 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
   const currentMachineId = getMachineId();
   const storedLicense = readEncryptedLicense();
 
-  // Check if this key was already blacklisted/recorded as expired
-  const allExpiredKeys = [
-    ...(config.expiredLicenseKeys || []),
-    ...(sysTrial.expiredLicenseKeys || []),
-    ...(config.usedTrialKeys || []),
-    ...(sysTrial.usedTrialKeys || [])
-  ].map(k => String(k).trim().toUpperCase());
-
-  if (allExpiredKeys.includes(normalizedKey)) {
-    return { ok: false, error: 'This license key has expired and cannot be reused. Please renew or purchase a new license at overdesk.store.' };
-  }
-
-  // Check if already activated on this machine and already past expiration
+  // Check if already activated on this machine and already past expiration for this exact key
   if (storedLicense && storedLicense.licenseKey && storedLicense.licenseKey.toUpperCase() === normalizedKey && storedLicense.machineId === currentMachineId) {
     if (storedLicense.planType === 'annual' && storedLicense.activatedAt) {
       const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
       if (Date.now() - storedLicense.activatedAt >= ONE_YEAR_MS) {
-        const updatedExpired = Array.from(new Set([...allExpiredKeys, normalizedKey, licenseKey]));
-        writeConfig({ expiredLicenseKeys: updatedExpired, licenseValid: false, licenseExpired: true, licenseKey: null });
-        return { ok: false, error: 'This license key has expired and cannot be reused. Please purchase a new license at overdesk.store.' };
-      }
-    } else if (storedLicense.planType === 'trial' && storedLicense.activatedAt) {
-      const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
-      if (Date.now() - storedLicense.activatedAt >= FIVE_DAYS_MS) {
-        const updatedExpired = Array.from(new Set([...allExpiredKeys, normalizedKey, licenseKey]));
-        writeConfig({ expiredLicenseKeys: updatedExpired, usedTrialKeys: updatedExpired, licenseValid: false, licenseExpired: true, licenseKey: null });
-        return { ok: false, error: 'This trial license key has expired. Please purchase an Annual or Lifetime license at overdesk.store.' };
+        return { ok: false, error: 'This annual license key has expired (1 year subscription elapsed). Please renew or purchase a new license at overdesk.store.' };
       }
     }
   }
@@ -1054,65 +1103,52 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
           data.purchase.option_id
         )) || '';
 
-        const fullCheckStr = (
-          rawVariant + ' ' + 
-          (data.product_name || '') + ' ' + 
-          (data.product_permalink || '') + ' ' + 
-          (data.purchase && data.purchase.product_name ? data.purchase.product_name : '') + ' ' + 
-          (data.purchase && data.purchase.permalink ? data.purchase.permalink : '') + ' ' + 
-          JSON.stringify(data.purchase || {})
-        ).toLowerCase();
+        const variantStr = String(rawVariant).toLowerCase();
+        const purchaseStr = JSON.stringify(data.purchase || {}).toLowerCase();
+        const price = (data.purchase && typeof data.purchase.price === 'number') ? data.purchase.price : 0;
+        const hasSubscription = Boolean(data.purchase && data.purchase.subscription_id);
+        const isRecurring = Boolean(data.purchase && (data.purchase.is_recurring_charge || data.purchase.recurrence));
+        const isPaid = price > 0 || hasSubscription || isRecurring;
 
-        const isPriceZero = Boolean(data.purchase && (data.purchase.price === 0 || data.purchase.price === '0' || data.purchase.free_trial));
-        const isTrialMatch = isPriceZero ||
-          fullCheckStr.includes('qllzvmpqab6m9w92clrjyw') || 
-          fullCheckStr.includes('trial') || 
-          fullCheckStr.includes('trail') || 
-          fullCheckStr.includes('5-day') || 
-          fullCheckStr.includes('5 day') || 
-          fullCheckStr.includes('5-trading') || 
-          fullCheckStr.includes('5 trading') || 
-          fullCheckStr.includes('sample') || 
-          fullCheckStr.includes('free');
-
-        const isAnnualMatch = !isTrialMatch && (
-          fullCheckStr.includes('dih5cg0o3nvuoef7xrhtyw') || 
-          fullCheckStr.includes('annual') || 
-          fullCheckStr.includes('yearly') || 
-          fullCheckStr.includes('1-year') || 
-          fullCheckStr.includes('1 year') || 
-          fullCheckStr.includes('subscription') || 
-          Boolean(data.purchase && data.purchase.subscription_id)
+        // 1. Lifetime check
+        const isLifetimeMatch = (
+          variantStr.includes('lifetime') || 
+          variantStr.includes('perpetual') || 
+          variantStr.includes('one-time') || 
+          variantStr.includes('z7fdvim6isjecljzypubqw') ||
+          purchaseStr.includes('z7fdvim6isjecljzypubqw') ||
+          licenseKey.toUpperCase().includes('LIFETIME')
         );
 
-        const isLifetimeMatch = !isTrialMatch && !isAnnualMatch && (
-          fullCheckStr.includes('z7fdvim6isjecljzypubqw') || 
-          fullCheckStr.includes('lifetime') || 
-          fullCheckStr.includes('perpetual') || 
-          fullCheckStr.includes('one-time')
+        // 2. Annual check
+        const isAnnualMatch = !isLifetimeMatch && (
+          hasSubscription ||
+          isRecurring ||
+          variantStr.includes('annual') || 
+          variantStr.includes('yearly') || 
+          variantStr.includes('1-year') || 
+          variantStr.includes('1 year') || 
+          variantStr.includes('12 month') || 
+          variantStr.includes('subscription') || 
+          variantStr.includes('dih5cg0o3nvuoef7xrhtyw') ||
+          purchaseStr.includes('dih5cg0o3nvuoef7xrhtyw') ||
+          licenseKey.toUpperCase().includes('ANNUAL') ||
+          licenseKey.toUpperCase().includes('YEAR')
         );
 
         let planType = 'trial';
         let variantName = rawVariant || '5-Day Trial';
 
-        if (isTrialMatch) {
-          planType = 'trial';
-          variantName = rawVariant || '5-Day Trial Access';
-        } else if (isAnnualMatch) {
-          planType = 'annual';
-          variantName = rawVariant || 'Annual Subscription (1 Year)';
-        } else if (isLifetimeMatch) {
+        if (isLifetimeMatch) {
           planType = 'lifetime';
           variantName = rawVariant || 'Lifetime Access';
+        } else if (isAnnualMatch || isPaid) {
+          planType = 'annual';
+          variantName = rawVariant || 'Annual Subscription (1 Year)';
         } else {
-          // If price is 0 or variant is unconfirmed, treat as 5-Day Trial for safety
-          if (isPriceZero) {
-            planType = 'trial';
-            variantName = '5-Day Trial Access';
-          } else {
-            planType = 'trial';
-            variantName = rawVariant || '5-Day Trial Access';
-          }
+          // Free ($0) and explicitly a trial
+          planType = 'trial';
+          variantName = rawVariant || '5-Day Trial Access';
         }
 
         // Check if trial key was previously used and expired on this machine
@@ -1251,18 +1287,29 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
               ? storedLicense.activatedAt
               : Date.now());
 
-        const updatedUsedTrialKeys = isTrial ? Array.from(new Set([...usedTrialKeys, licenseKey, normalizedKey])) : usedTrialKeys;
+        const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+        const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
+        const finalExpiresAt = isTrial 
+          ? (originalTrialStart + FIVE_DAYS_MS) 
+          : (planType === 'annual' ? (nowTime + ONE_YEAR_MS) : null);
+
+        // Remove key from expired list if it was erroneously placed there during trial expiration
+        const cleanedExpiredKeys = (config.expiredLicenseKeys || []).filter(k => k.toUpperCase() !== normalizedKey && k !== licenseKey);
+        const cleanedUsedTrialKeys = isTrial ? Array.from(new Set([...usedTrialKeys, licenseKey, normalizedKey])) : usedTrialKeys;
 
         writeEncryptedLicense(licenseKey, currentMachineId, planType, variantName, nowTime);
         writeConfig({ 
           licenseValid: true, 
           licenseExpired: false, 
           trialExpired: false,
+          permanentlyLocked: false,
           licenseKey, 
           planType, 
           variantName, 
           activatedAt: nowTime, 
-          usedTrialKeys: updatedUsedTrialKeys 
+          expiresAt: finalExpiresAt,
+          expiredLicenseKeys: cleanedExpiredKeys,
+          usedTrialKeys: cleanedUsedTrialKeys 
         });
 
         try {
@@ -1274,10 +1321,11 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
             sysTrial.planType = planType;
             sysTrial.variantName = variantName;
             sysTrial.activatedAt = nowTime;
+            sysTrial.expiresAt = finalExpiresAt;
             sysTrial.trialStarted = true;
             sysTrial.trialUsed = true;
             sysTrial.trialStartDate = originalTrialStart;
-            sysTrial.usedTrialKeys = updatedUsedTrialKeys;
+            sysTrial.usedTrialKeys = cleanedUsedTrialKeys;
             saveSystemTrialRecord(sysTrial);
           } else {
             // Paid License (Annual or Lifetime)
@@ -1289,18 +1337,21 @@ ipcMain.handle('validate-license', async (event, rawKey) => {
             sysTrial.planType = planType;
             sysTrial.variantName = variantName;
             sysTrial.activatedAt = nowTime;
+            sysTrial.expiresAt = finalExpiresAt;
+            sysTrial.expiredLicenseKeys = cleanedExpiredKeys;
             saveSystemTrialRecord(sysTrial);
           }
         } catch (e) {}
 
-        const FIVE_DAYS_MS = 5 * 24 * 60 * 60 * 1000;
         return { 
           ok: true, 
           isTrial, 
+          licenseValid: true,
+          licenseExpired: false,
           planType, 
           variantName,
-          expiresAt: isTrial ? (originalTrialStart + FIVE_DAYS_MS) : (planType === 'annual' ? (nowTime + 365 * 24 * 60 * 60 * 1000) : null),
-          daysRemaining: isTrial ? Math.max(1, Math.ceil(((originalTrialStart + FIVE_DAYS_MS) - Date.now()) / (24 * 60 * 60 * 1000))) : undefined
+          expiresAt: finalExpiresAt,
+          daysRemaining: isTrial ? Math.max(1, Math.ceil(((originalTrialStart + FIVE_DAYS_MS) - Date.now()) / (24 * 60 * 60 * 1000))) : (planType === 'annual' ? 365 : undefined)
         };
       }
     }
