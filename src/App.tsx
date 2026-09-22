@@ -36,6 +36,7 @@ declare global {
       updateBounds?: (left: number, top: number, width: number, height: number) => void;
       moveWindow?: (dx: number, dy: number) => void;
       enterOverlayMode?: () => void;
+      closeApp?: () => void;
       isAndroid?: () => boolean;
       supportsPip?: () => boolean;
     };
@@ -2460,7 +2461,8 @@ export default function App() {
       }
 
       if (window.AndroidOverlay?.updateBounds) {
-        window.AndroidOverlay.updateBounds(rect.left, rect.top, 320, h);
+        const totalHeight = Math.max(h, Math.ceil(rect.height));
+        window.AndroidOverlay.updateBounds(rect.left, rect.top, 320, totalHeight);
       }
     };
 
@@ -3748,6 +3750,10 @@ export default function App() {
   };
 
   const triggerAppShutdown = () => {
+    if (window.AndroidOverlay?.closeApp) {
+      window.AndroidOverlay.closeApp();
+      return;
+    }
     if (window.electronAPI) {
       window.electronAPI.closeApp();
     } else {
@@ -3867,19 +3873,20 @@ export default function App() {
   // Calculations for current selected Mode items totals
   const totalModeOptions = modes[currentMode]?.options.length || 0;
   const totalModeChecked = selections[currentMode]?.length || 0;
+  const isAndroidEnv = typeof window !== 'undefined' && (!!window.AndroidOverlay || /android/i.test(navigator.userAgent));
 
   return (
     <div
       className="app-container"
       style={{
-        width: '440px',
-        height: '100%',
+        width: isAndroidEnv ? 'auto' : '440px',
+        height: isAndroidEnv ? 'auto' : '100%',
         transform: `scale(${scale})`,
         transformOrigin: 'top center',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
-        padding: '30px 60px 60px 60px',
+        padding: isAndroidEnv ? '4px' : '30px 60px 60px 60px',
         background: 'transparent',
         position: 'relative',
         overflow: 'visible',
@@ -3903,7 +3910,7 @@ export default function App() {
           boxShadow: !licenseActive ? 'none' : (isGripped ? `0 20px 50px -5px ${modes[currentMode]?.soft || 'var(--accent-soft)'}, 0 8px 24px -2px rgba(0, 0, 0, 0.45)` : undefined),
           transition: (isGripped || isResizingHeight) ? 'transform 0s, box-shadow 0.2s ease' : 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s ease, padding 0.35s cubic-bezier(0.4, 0, 0.2, 1), min-height 0.25s cubic-bezier(0.16, 1, 0.3, 1), height 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
           cursor: isGripped ? 'grabbing' : undefined,
-          minHeight: !minimized ? (activeApp === 'calendar' ? `${340 + expandedExtraHeight}px` : (settingsOpen ? `${420 + expandedExtraHeight}px` : undefined)) : undefined,
+          minHeight: !minimized ? (activeApp === 'calendar' ? `${(isAndroidEnv ? 390 : 340) + expandedExtraHeight}px` : (settingsOpen ? `${420 + expandedExtraHeight}px` : undefined)) : undefined,
           position: 'relative',
           overflow: 'hidden',
         }}

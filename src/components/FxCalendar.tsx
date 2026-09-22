@@ -1395,11 +1395,14 @@ export default function FxCalendar({
     );
   }
 
+  const isMobilePlatform = typeof window !== 'undefined' && (!!(window as any).AndroidOverlay || /android|iphone|ipad/i.test(navigator.userAgent));
+  const baseCalendarHeight = isMobilePlatform ? 390 : 340;
+
   return (
     <div className="fx-container font-sans" style={{
       display: 'flex',
       flexDirection: 'column',
-      height: `${340 + extraHeight}px`,
+      height: `${baseCalendarHeight + extraHeight}px`,
       boxSizing: 'border-box',
       overflow: 'hidden',
       position: 'relative',

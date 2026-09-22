@@ -55,6 +55,16 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public void closeApp() {
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    activity.cleanupAndExit();
+                }
+            });
+        }
+
+        @JavascriptInterface
         public boolean isAndroid() {
             return true;
         }
@@ -84,13 +94,14 @@ public class MainActivity extends BridgeActivity {
             if (params != null) {
                 float density = getResources().getDisplayMetrics().density;
                 int screenWidth = getResources().getDisplayMetrics().widthPixels;
-                int initialW = (int) (340 * density);
-                int initialH = (int) (440 * density);
+                int screenHeight = getResources().getDisplayMetrics().heightPixels;
+                int initialW = Math.min(screenWidth, (int) (340 * density));
+                int initialH = Math.min(screenHeight - (int) (60 * density), (int) (520 * density));
                 params.gravity = Gravity.TOP | Gravity.START;
                 params.width = initialW;
                 params.height = initialH;
                 params.x = Math.max(0, (screenWidth - initialW) / 2);
-                params.y = (int) (48 * density);
+                params.y = (int) (40 * density);
                 params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
                 params.flags |= WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
                 window.setAttributes(params);
@@ -117,12 +128,19 @@ public class MainActivity extends BridgeActivity {
         if (params == null) return;
 
         float density = getResources().getDisplayMetrics().density;
-        int pad = (int) (10 * density);
-        int targetW = (int) (width * density) + pad * 2;
-        int targetH = (int) (height * density) + pad * 2;
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
 
-        params.width = Math.max((int) (200 * density), targetW);
-        params.height = Math.max((int) (50 * density), targetH);
+        int padW = (int) (12 * density);
+        int padH = (int) (22 * density);
+        int targetW = (int) (width * density) + padW;
+        int targetH = (int) (height * density) + padH;
+
+        int maxAllowedHeight = screenHeight - (int) (60 * density);
+        targetH = Math.min(targetH, maxAllowedHeight);
+
+        params.width = Math.min(screenWidth, Math.max((int) (260 * density), targetW));
+        params.height = Math.max((int) (60 * density), targetH);
         params.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
         params.flags |= WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
 
@@ -185,7 +203,51 @@ public class MainActivity extends BridgeActivity {
             if (webView != null) {
                 webView.setBackgroundColor(Color.TRANSPARENT);
             }
+            Window window = getWindow();
+            if (window != null) {
+                window.setBackgroundDrawableResource(android.R.color.transparent);
+            }
         } catch (Exception ignored) {}
+    }
+
+    public void cleanupAndExit() {
+        try {
+            Window window = getWindow();
+            if (window != null) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH);
+            }
+        } catch (Exception ignored) {}
+        finishAndRemoveTask();
+    }
+
+    @Override
+    public void finish() {
+        try {
+            Window window = getWindow();
+            if (window != null) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH);
+            }
+        } catch (Exception ignored) {}
+        super.finish();
+    }
+
+    @Override
+    public void onDestroy() {
+        try {
+            Window window = getWindow();
+            if (window != null) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH);
+            }
+        } catch (Exception ignored) {}
+        super.onDestroy();
+    }
+
+    @Override
+    public void onBackPressed() {
+        cleanupAndExit();
     }
 
     public void enterOverlayPipMode() {
@@ -195,7 +257,7 @@ public class MainActivity extends BridgeActivity {
                 Rational aspectRatio = new Rational(9, 16);
                 pipBuilder.setAspectRatio(aspectRatio);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    pipBuilder.setAutoEnterEnabled(true);
+                    pipBuilder.setAutoEnterEnabled(false);
                     pipBuilder.setSeamlessResizeEnabled(true);
                 }
                 enterPictureInPictureMode(pipBuilder.build());
@@ -204,16 +266,6 @@ public class MainActivity extends BridgeActivity {
                     enterPictureInPictureMode();
                 } catch (Exception ignored) {}
             }
-        }
-    }
-
-    @Override
-    public void onUserLeaveHint() {
-        super.onUserLeaveHint();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            try {
-                enterOverlayPipMode();
-            } catch (Exception ignored) {}
         }
     }
 
