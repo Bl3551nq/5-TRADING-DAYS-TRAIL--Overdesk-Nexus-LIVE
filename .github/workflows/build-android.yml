@@ -34,13 +34,22 @@ jobs:
           java-version: '21'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Setup Android SDK Environment
+        run: |
+          ANDROID_PATH="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$ANDROID_PATH" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_PATH" >> $GITHUB_ENV
+          if [ -d "$ANDROID_PATH/cmdline-tools/latest/bin" ]; then
+            echo "$ANDROID_PATH/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          fi
+          if [ -d "$ANDROID_PATH/platform-tools" ]; then
+            echo "$ANDROID_PATH/platform-tools" >> $GITHUB_PATH
+          fi
 
       - name: Install Android Platforms
         run: |
           yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-36" "platforms;android-35" "build-tools;36.0.0" "build-tools;35.0.0"
+          sdkmanager "platforms;android-35" "platforms;android-34" "build-tools;35.0.0" "build-tools;34.0.0" || true
 
       - name: Install Dependencies
         run: npm install
