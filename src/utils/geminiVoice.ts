@@ -176,16 +176,45 @@ export class GeminiVoiceEngine {
       this.currentPhraseBuffer = activeText;
       this.onTranscript(activeText, !!finalizedText);
 
-      // Check for instant single-word shortcut navigation commands
-      const lower = activeText.toLowerCase().trim();
-      if (
-        lower === 'next' ||
-        lower === 'back' ||
-        lower === 'calendar' ||
-        lower === 'checklist' ||
-        lower === 'what next' ||
-        lower === "what's next"
-      ) {
+      // Check for instant shortcut navigation commands (with punctuation removed)
+      const cleanLower = activeText.toLowerCase().replace(/[.,/#!$%^&*;:{}=\-_`~()]/g, ' ').replace(/\s+/g, ' ').trim();
+      const cleanWords = cleanLower.split(/\s+/).filter(Boolean);
+
+      const isInstantNext =
+        cleanLower === 'next' ||
+        cleanLower === 'nex' ||
+        cleanLower === 'neck' ||
+        cleanLower === 'necks' ||
+        cleanWords.includes('next') ||
+        cleanWords.includes('nex') ||
+        cleanWords.includes('neck') ||
+        cleanWords.includes('necks') ||
+        cleanWords.includes('mark') ||
+        cleanWords.includes('check') ||
+        cleanWords.includes('checked') ||
+        cleanWords.includes('done') ||
+        cleanLower.startsWith('next ') ||
+        cleanLower.endsWith(' next') ||
+        cleanLower === 'mark next' ||
+        cleanLower === 'check next' ||
+        cleanLower === 'next step' ||
+        cleanLower === 'next item' ||
+        cleanLower === 'next one' ||
+        cleanLower === 'next please' ||
+        cleanLower === 'advance';
+
+      const isInstantOther =
+        cleanLower === 'back' ||
+        cleanWords.includes('back') ||
+        cleanLower === 'calendar' ||
+        cleanWords.includes('calendar') ||
+        cleanLower === 'checklist' ||
+        cleanWords.includes('checklist') ||
+        cleanLower.includes('what next') ||
+        cleanLower.includes("what's next") ||
+        cleanLower.includes('whats next');
+
+      if (isInstantNext || isInstantOther) {
         if (this.speechDebounceTimer) clearTimeout(this.speechDebounceTimer);
         this.handleTranscribedPhrase(activeText);
         return;
@@ -196,7 +225,7 @@ export class GeminiVoiceEngine {
         if (this.speechDebounceTimer) clearTimeout(this.speechDebounceTimer);
         this.speechDebounceTimer = setTimeout(() => {
           this.handleTranscribedPhrase(finalizedText);
-        }, 120);
+        }, 80);
         return;
       }
 
@@ -207,7 +236,7 @@ export class GeminiVoiceEngine {
           const phraseToProcess = this.currentPhraseBuffer;
           this.handleTranscribedPhrase(phraseToProcess);
         }
-      }, 700);
+      }, 500);
     };
 
     rec.onerror = (event: any) => {
@@ -245,19 +274,23 @@ export class GeminiVoiceEngine {
         this.restartTimeout = setTimeout(() => {
           if (this.isRunning) {
             try {
-              rec.start();
+              this.initSpeechRecognition(SpeechRecClass);
             } catch (err) {
-              console.debug('Recognition restart loop note:', err);
+              console.debug('Recognition restart note:', err);
             }
           }
-        }, 300);
+        }, 150);
       } else {
         this.onState('OFF', 'Microphone standby');
       }
     };
 
-    rec.start();
-    this.recognition = rec;
+    try {
+      rec.start();
+      this.recognition = rec;
+    } catch (e) {
+      console.warn('Recognition start warning:', e);
+    }
   }
 
   /**
@@ -284,12 +317,21 @@ export class GeminiVoiceEngine {
       command = 'WHAT_NEXT';
     } else if (
       words.includes('next') ||
+      words.includes('nex') ||
+      words.includes('neck') ||
+      words.includes('necks') ||
       words.includes('forward') ||
       words.includes('advance') ||
       words.includes('skip') ||
+      words.includes('mark') ||
+      words.includes('check') ||
+      words.includes('checked') ||
+      words.includes('done') ||
       lower.includes('next') ||
       lower.includes('go next') ||
       lower.includes('next one') ||
+      lower.includes('next item') ||
+      lower.includes('next step') ||
       lower.includes('next task')
     ) {
       command = 'NEXT';
@@ -338,13 +380,12 @@ export class GeminiVoiceEngine {
    */
   private dispatchCommand(command: VoiceCommand, heardText: string) {
     const now = Date.now();
-    if (now - this.lastTriggerTimestamp < 800) {
-      return; // Debounce duplicate triggers
+    if (now - this.lastTriggerTimestamp < 350) {
+      return; // Debounce duplicate triggers within 350ms
     }
     this.lastTriggerTimestamp = now;
 
     this.onState('TRIGGERED', `Recognized: "${command}"`);
-    this.onCommand(command, heardText);
     this.onAction({
       command,
       action: command,
@@ -356,7 +397,7 @@ export class GeminiVoiceEngine {
       if (this.isRunning && this.isListeningActive) {
         this.onState('LISTENING', 'Microphone active — Listening...');
       }
-    }, 800);
+    }, 450);
   }
 
   /**

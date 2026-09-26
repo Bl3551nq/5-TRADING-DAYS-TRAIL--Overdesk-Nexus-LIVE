@@ -607,15 +607,29 @@ export default function App() {
   });
   const [minimized, setMinimized] = useState<boolean>(false);
 
-  // Modular Modes Storage
+  // Modular Modes Storage (Strictly 5 standard trading modes)
   const [modes, setModes] = useState<Record<string, ModeDetail>>(() => {
     try {
       const saved = localStorage.getItem('fm_modes');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          // If legacy 'work' mode key exists from old versions or imports, migrate to 'business' if missing
+          if (parsed.work && !parsed.business) {
+            parsed.business = parsed.work;
+          }
+          delete parsed.work;
+
+          const standardKeys = ['business', 'life', 'pc', 'sync', 'alerts'];
           const mergedObj: Record<string, ModeDetail> = {};
-          Object.keys(parsed).forEach((k) => {
+
+          // Keep user ordering if valid, but strictly retain only the 5 standard keys
+          const existingKeys = Object.keys(parsed).filter((k) => standardKeys.includes(k));
+          standardKeys.forEach((k) => {
+            if (!existingKeys.includes(k)) existingKeys.push(k);
+          });
+
+          existingKeys.slice(0, 5).forEach((k) => {
             const def = DEFAULT_MODES[k];
             const opts = Array.isArray(parsed[k]?.options) ? parsed[k].options : (def?.options || []);
             const baseOpts = Array.isArray(parsed[k]?.baseOptions) && parsed[k].baseOptions.length > 0
@@ -632,28 +646,26 @@ export default function App() {
               baseOptions: baseOpts,
             };
           });
-          if (Object.keys(mergedObj).length > 0) return mergedObj;
+
+          if (Object.keys(mergedObj).length === 5) {
+            try {
+              localStorage.setItem('fm_modes', JSON.stringify(mergedObj));
+              localStorage.removeItem('fm_sel_work');
+            } catch (e) {}
+            return mergedObj;
+          }
         }
       }
     } catch (e) {}
     return DEFAULT_MODES;
   });
 
-  // Current selections for each mode
+  // Current selections for each mode (Strictly 5 standard trading modes)
   const [selections, setSelections] = useState<Record<string, number[]>>(() => {
     const defaultSels: Record<string, number[]> = {};
+    const standardKeys = ['business', 'life', 'pc', 'sync', 'alerts'];
     try {
-      const savedModesStr = localStorage.getItem('fm_modes');
-      let modeKeys = Object.keys(DEFAULT_MODES);
-      if (savedModesStr) {
-        try {
-          const parsed = JSON.parse(savedModesStr);
-          if (parsed && typeof parsed === 'object') {
-            modeKeys = Array.from(new Set([...modeKeys, ...Object.keys(parsed)]));
-          }
-        } catch (e) {}
-      }
-      modeKeys.forEach((m) => {
+      standardKeys.forEach((m) => {
         try {
           const savedS = localStorage.getItem('fm_sel_' + m);
           if (savedS) {
@@ -666,7 +678,7 @@ export default function App() {
         }
       });
     } catch (e) {
-      Object.keys(DEFAULT_MODES).forEach((m) => {
+      standardKeys.forEach((m) => {
         defaultSels[m] = [];
       });
     }
@@ -801,9 +813,9 @@ export default function App() {
   const [voiceCommandsEnabled, setVoiceCommandsEnabled] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem('fm_voice_commands');
-      return saved === 'true';
+      return saved !== 'false'; // Default to true so voice "next" command works immediately
     } catch (e) {
-      return false;
+      return true;
     }
   });
   const [voiceIsListening, setVoiceIsListening] = useState<boolean>(false);
@@ -830,6 +842,22 @@ export default function App() {
     isWhatNextActiveRef.current = isWhatNextActive;
   }, [isWhatNextActive]);
 
+  // Live Copilot Mic Mute state (managed via Settings)
+  const [liveMicMuted, setLiveMicMuted] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('fm_live_mic_muted') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleLiveMicMutedChange = (muted: boolean) => {
+    setLiveMicMuted(muted);
+    try {
+      localStorage.setItem('fm_live_mic_muted', muted ? '1' : '0');
+    } catch {}
+  };
+
   const [whatNextPhase, setWhatNextPhase] = useState<WhatNextPhase>('LISTENING');
   const [whatNextTranscript, setWhatNextTranscript] = useState<string>('');
   const [whatNextResult, setWhatNextResult] = useState<WhatNextResultData | null>(null);
@@ -839,30 +867,14 @@ export default function App() {
   const [selectedVoiceUri, setSelectedVoiceUri] = useState<string>(() => {
     try {
       const stored = localStorage.getItem('fm_voice_uri');
-      if (stored && !stored.startsWith('gemini:')) return stored;
-      return 'default';
+      if (stored && ['Zephyr', 'Kore', 'Puck', 'Fenrir', 'Charon'].includes(stored)) return stored;
+      return 'Zephyr';
     } catch {
-      return 'default';
+      return 'Zephyr';
     }
   });
   const lastWhatNextQueryRef = useRef<string>('');
   const lastWhatNextTimestampRef = useRef<number>(0);
-
-  useEffect(() => {
-    const updateVoices = () => {
-      const v = getAvailableSystemVoices();
-      if (v && v.length > 0) {
-        setAvailableSystemVoices(v);
-      }
-    };
-    updateVoices();
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.addEventListener('voiceschanged', updateVoices);
-      return () => {
-        window.speechSynthesis.removeEventListener('voiceschanged', updateVoices);
-      };
-    }
-  }, []);
 
   const handleVoiceChange = (uri: string) => {
     setSelectedVoiceUri(uri);
@@ -882,6 +894,80 @@ export default function App() {
     });
   }, [selectedVoiceUri]);
 
+  const processWhatNextQuery = useCallback(
+    async (spokenText: string, fromLiveVoice: boolean = false) => {
+      if (!spokenText || !spokenText.trim()) return;
+      unlockAudioContext();
+      const cleanText = spokenText.trim();
+
+      // Prevent duplicate calls within 2 seconds for identical phrase, EXCEPT for sequential "next" commands
+      const now = Date.now();
+      const isNextCommand = /^(next|mark next|check next|next item|next step|next please|next one|go next|advance)$/i.test(cleanText);
+      if (!isNextCommand && cleanText === lastWhatNextQueryRef.current && now - lastWhatNextTimestampRef.current < 2000) {
+        return;
+      }
+      lastWhatNextQueryRef.current = cleanText;
+      lastWhatNextTimestampRef.current = now;
+
+      setWhatNextPhase('ANALYZING');
+      setWhatNextError(null);
+
+      try {
+        // Execute local fuzzy matching directly via Fuse.js with selections support
+        const currentSel = selectionsRef.current || selections;
+        const data: WhatNextResultData = matchChecklistWithFuse(cleanText, modes, currentMode, currentSel);
+
+        setWhatNextResult(data);
+        setWhatNextPhase('RESULT');
+        playSoundChime('complete');
+
+        // Auto-check completed item in selections if a valid checklist item was concluded
+        if (data.matchedMode && typeof data.matchedItemIndex === 'number' && data.matchedItemIndex >= 0) {
+          const targetModeKey = Object.keys(modes).find(
+            (k) =>
+              k.toLowerCase() === data.matchedMode?.toLowerCase() ||
+              modes[k]?.title.toLowerCase() === data.matchedMode?.toLowerCase()
+          );
+          if (targetModeKey) {
+            if (targetModeKey !== currentModeRef.current) {
+              setCurrentMode(targetModeKey);
+              currentModeRef.current = targetModeKey;
+              localStorage.setItem('fm_current_mode', targetModeKey);
+            }
+            setSelections((prev) => {
+              const currentChecked = prev[targetModeKey] || [];
+              if (!currentChecked.includes(data.matchedItemIndex!)) {
+                const nextChecked = [...currentChecked, data.matchedItemIndex!];
+                const updated = {
+                  ...prev,
+                  [targetModeKey]: nextChecked,
+                };
+                selectionsRef.current = updated;
+                try {
+                  localStorage.setItem('fm_sel_' + targetModeKey, JSON.stringify(nextChecked));
+                } catch (e) {}
+                return updated;
+              }
+              return prev;
+            });
+          }
+        }
+
+        // If from Gemini Live Voice Copilot, the Live API speaks natively via PCM audio stream.
+        // If from button click, Web Speech fallback, or manual query, speak via TTS!
+        if (!fromLiveVoice) {
+          const speech = data.spokenSpeech || `Next 3 steps: ${data.nextAction}`;
+          speakUtterance(speech);
+        }
+      } catch (err: any) {
+        console.warn('WHAT NEXT matching error:', err);
+        setWhatNextError('Unable to match checklist item. Please try again.');
+        setWhatNextPhase('ERROR');
+      }
+    },
+    [modes, currentMode, selections, speakUtterance]
+  );
+
   const askWhatNext = useCallback(() => {
     unlockAudioContext();
     setWhatNextResult(null);
@@ -889,45 +975,7 @@ export default function App() {
     setWhatNextError(null);
     setWhatNextPhase('LISTENING');
     playSoundChime('check');
-    speakUtterance('What next?');
-    if (!geminiVoiceRef.current || !geminiVoiceRef.current.running) {
-      requestMicPermission().catch(() => {});
-    }
-  }, [speakUtterance]);
-
-  const processWhatNextQuery = useCallback(async (spokenText: string) => {
-    if (!spokenText || !spokenText.trim()) return;
-    unlockAudioContext();
-    const cleanText = spokenText.trim();
-
-    // Prevent duplicate calls within 2 seconds for identical phrase
-    const now = Date.now();
-    if (cleanText === lastWhatNextQueryRef.current && now - lastWhatNextTimestampRef.current < 2000) {
-      return;
-    }
-    lastWhatNextQueryRef.current = cleanText;
-    lastWhatNextTimestampRef.current = now;
-
-    setWhatNextPhase('ANALYZING');
-    setWhatNextError(null);
-
-    try {
-      // Execute local fuzzy matching directly via Fuse.js
-      // Fast, offline, zero API quota, perfect for Electron builds
-      const data: WhatNextResultData = matchChecklistWithFuse(cleanText, modes, currentMode);
-
-      setWhatNextResult(data);
-      setWhatNextPhase('RESULT');
-      playSoundChime('complete');
-
-      const speech = data.spokenSpeech || `Next step: ${data.nextAction}`;
-      speakUtterance(speech);
-    } catch (err: any) {
-      console.warn('WHAT NEXT matching error:', err);
-      setWhatNextError('Unable to match checklist item. Please try again.');
-      setWhatNextPhase('ERROR');
-    }
-  }, [modes, currentMode, speakUtterance]);
+  }, []);
 
   const handleWhatNextToggle = useCallback((val?: boolean) => {
     const nextVal = typeof val === 'boolean' ? val : !isWhatNextActiveRef.current;
@@ -937,11 +985,14 @@ export default function App() {
       if (minimizedRef.current) setMinimized(false);
       setSettingsOpen(false);
       setPickerOpen(false);
-      askWhatNext();
+      setWhatNextResult(null);
+      setWhatNextTranscript('');
+      setWhatNextError(null);
+      setWhatNextPhase('LISTENING');
     } else {
       stopCurrentSpeech();
     }
-  }, [askWhatNext]);
+  }, []);
 
   const requestMicPermission = async () => {
     try {
@@ -1044,10 +1095,33 @@ export default function App() {
   };
 
   useEffect(() => {
+    let mounted = true;
+    const tryStartVoice = async () => {
+      if (!mounted) return;
+      if (voiceCommandsEnabledRef.current && (!geminiVoiceRef.current || !geminiVoiceRef.current.isListening)) {
+        await requestMicPermission().catch(() => {});
+      }
+    };
+
     if (voiceCommandsEnabled) {
-      requestMicPermission().catch(() => {});
+      tryStartVoice();
     }
+
+    const onUserInteraction = () => {
+      if (voiceCommandsEnabledRef.current && (!geminiVoiceRef.current || !geminiVoiceRef.current.isListening)) {
+        tryStartVoice();
+      }
+    };
+
+    window.addEventListener('click', onUserInteraction, { passive: true });
+    window.addEventListener('touchstart', onUserInteraction, { passive: true });
+    window.addEventListener('keydown', onUserInteraction, { passive: true });
+
     return () => {
+      mounted = false;
+      window.removeEventListener('click', onUserInteraction);
+      window.removeEventListener('touchstart', onUserInteraction);
+      window.removeEventListener('keydown', onUserInteraction);
       if (geminiVoiceRef.current) {
         geminiVoiceRef.current.stop();
         geminiVoiceRef.current = null;
@@ -1511,7 +1585,7 @@ export default function App() {
           return;
         }
 
-        const standardKeys = ['work', 'life', 'pc', 'sync', 'alerts'];
+        const standardKeys = ['business', 'life', 'pc', 'sync', 'alerts'];
         const importedModes: Record<string, ModeDetail> = {};
         const importedSelections: Record<string, number[]> = {};
         const importedIcons: Record<string, string> = { ...iconAssignments };
@@ -1533,7 +1607,7 @@ export default function App() {
             'rgba(255, 40, 100, 0.16)',
             'rgba(255, 140, 0, 0.18)',
           ];
-          const defaultIcons = ['briefcase', 'home', 'laptop', 'shield', 'calendar'];
+          const defaultIcons = ['candlestick', 'stop_loss', 'smart_money', 'instant_execution', 'trade_journal'];
 
           const accent = item.accent || existingModeData?.accent || defaultAccentList[index % defaultAccentList.length];
           const soft = item.soft || existingModeData?.soft || defaultSoftList[index % defaultSoftList.length];
@@ -1739,19 +1813,24 @@ export default function App() {
 
   // Mode customizer icons assignment
   const [iconAssignments, setIconAssignments] = useState<Record<string, string>>(() => {
-    try {
-      const saved = localStorage.getItem('fm_icons');
-      if (saved) {
-        return JSON.parse(saved);
-      }
-    } catch (e) {}
-    return {
+    const defaultIcons: Record<string, string> = {
       business: 'candlestick',
       life: 'stop_loss',
       pc: 'smart_money',
       sync: 'instant_execution',
       alerts: 'trade_journal',
     };
+    try {
+      const saved = localStorage.getItem('fm_icons');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          delete parsed.work;
+          return { ...defaultIcons, ...parsed };
+        }
+      }
+    } catch (e) {}
+    return defaultIcons;
   });
 
   // Custom uploaded icons state
@@ -2278,6 +2357,48 @@ export default function App() {
       if (window.electronAPI.checkForUpdates) {
         window.electronAPI.checkForUpdates();
       }
+    }
+  }, []);
+
+  // Ensure strictly 5 modes and clean up any legacy 'work' or extraneous modes on mount
+  useEffect(() => {
+    const standardKeys = ['business', 'life', 'pc', 'sync', 'alerts'];
+    setModes((prev) => {
+      const keys = Object.keys(prev);
+      if (keys.length === 5 && keys.every((k) => standardKeys.includes(k))) {
+        return prev;
+      }
+      const pruned: Record<string, ModeDetail> = {};
+      const validKeys = keys.filter((k) => standardKeys.includes(k));
+      standardKeys.forEach((k) => {
+        if (!validKeys.includes(k)) validKeys.push(k);
+      });
+      validKeys.slice(0, 5).forEach((k) => {
+        pruned[k] = prev[k] || DEFAULT_MODES[k];
+      });
+      try {
+        localStorage.setItem('fm_modes', JSON.stringify(pruned));
+        localStorage.removeItem('fm_sel_work');
+      } catch (e) {}
+      return pruned;
+    });
+
+    setIconAssignments((prev) => {
+      if (!prev.work) return prev;
+      const copy = { ...prev };
+      delete copy.work;
+      try {
+        localStorage.setItem('fm_icons', JSON.stringify(copy));
+      } catch (e) {}
+      return copy;
+    });
+
+    if (currentMode === 'work') {
+      setCurrentMode('business');
+      currentModeRef.current = 'business';
+      try {
+        localStorage.setItem('fm_current_mode', 'business');
+      } catch (e) {}
     }
   }, []);
 
@@ -3249,6 +3370,10 @@ export default function App() {
   minimizedRef.current = minimized;
   const voiceCommandsEnabledRef = useRef(voiceCommandsEnabled);
   voiceCommandsEnabledRef.current = voiceCommandsEnabled;
+  const selectionsRef = useRef(selections);
+  selectionsRef.current = selections;
+  const moveCheckedToBottomRef = useRef(moveCheckedToBottom);
+  moveCheckedToBottomRef.current = moveCheckedToBottom;
 
   const handleVoiceNext = useCallback(() => {
     if (minimizedRef.current) {
@@ -3257,56 +3382,165 @@ export default function App() {
     if (activeAppRef.current !== 'checklist') {
       setActiveApp('checklist');
     }
+    if (isWhatNextActiveRef.current) {
+      setIsWhatNextActive(false);
+      localStorage.setItem('fm_what_next_active', 'false');
+    }
 
-    const currMode = currentModeRef.current;
     const currentModes = modesRef.current;
+    const modeKeys = Object.keys(currentModes);
+    if (modeKeys.length === 0) return;
+
+    let currMode = currentModeRef.current;
+    if (!currentModes[currMode]) {
+      currMode = modeKeys[0];
+      setCurrentMode(currMode);
+      currentModeRef.current = currMode;
+      localStorage.setItem('fm_current_mode', currMode);
+    }
+
+    const currentSelections = selectionsRef.current || {};
     const isFull = fullModeRef.current;
     const indices = fullModeIndicesRef.current;
-    const modeKeys = Object.keys(currentModes);
 
+    const modeOptions = currentModes[currMode]?.options || [];
+    const checkedInCurr = currentSelections[currMode] || [];
+
+    // Find the next item to mark in currentMode
+    let targetIdx = -1;
     if (isFull) {
-      const total = currentModes[currMode]?.options.length || 0;
-      const currentIdx = Math.min(
+      const fullIdx = Math.min(
         Math.max(0, indices[currMode] || 0),
-        Math.max(0, (total || 1) - 1)
+        Math.max(0, modeOptions.length - 1)
       );
-
-      if (currentIdx < total - 1) {
-        const nextIdx = currentIdx + 1;
-        setFullModeIndices((prev) => {
-          const updated = { ...prev, [currMode]: nextIdx };
-          localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
-          return updated;
-        });
-        fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [currMode]: nextIdx };
-        playSoundChime('check');
+      if (!checkedInCurr.includes(fullIdx)) {
+        targetIdx = fullIdx;
       } else {
-        if (modeKeys.length > 0) {
-          const modeIdx = modeKeys.indexOf(currMode);
-          const nextMode = modeKeys[(modeIdx + 1) % modeKeys.length];
-          setCurrentMode(nextMode);
-          currentModeRef.current = nextMode;
-          localStorage.setItem('fm_current_mode', nextMode);
-          setFullModeIndices((prev) => {
-            const updated = { ...prev, [nextMode]: 0 };
-            localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
-            return updated;
-          });
-          fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [nextMode]: 0 };
-          playSoundChime('check');
+        // If current card is already checked, find next unchecked in this mode
+        for (let i = fullIdx + 1; i < modeOptions.length; i++) {
+          if (!checkedInCurr.includes(i)) {
+            targetIdx = i;
+            break;
+          }
+        }
+        if (targetIdx === -1) {
+          for (let i = 0; i < modeOptions.length; i++) {
+            if (!checkedInCurr.includes(i)) {
+              targetIdx = i;
+              break;
+            }
+          }
         }
       }
     } else {
-      if (modeKeys.length > 0) {
-        const modeIdx = modeKeys.indexOf(currMode);
-        const nextMode = modeKeys[(modeIdx + 1) % modeKeys.length];
-        setCurrentMode(nextMode);
-        currentModeRef.current = nextMode;
-        localStorage.setItem('fm_current_mode', nextMode);
-        playSoundChime('check');
+      // Find first unchecked item in currentMode
+      for (let i = 0; i < modeOptions.length; i++) {
+        if (!checkedInCurr.includes(i)) {
+          targetIdx = i;
+          break;
+        }
       }
     }
-  }, []);
+
+    let targetMode = currMode;
+
+    // If current mode is fully checked, move to the next mode in sequence that has unchecked items
+    if (targetIdx === -1) {
+      const currModeIdx = modeKeys.indexOf(currMode);
+      for (let offset = 1; offset <= modeKeys.length; offset++) {
+        const nextModeKey = modeKeys[(currModeIdx + offset) % modeKeys.length];
+        const nextOpts = currentModes[nextModeKey]?.options || [];
+        const nextChecked = currentSelections[nextModeKey] || [];
+        const foundUnchecked = nextOpts.findIndex((_, idx) => !nextChecked.includes(idx));
+        if (foundUnchecked !== -1) {
+          targetMode = nextModeKey;
+          targetIdx = foundUnchecked;
+          break;
+        }
+      }
+    }
+
+    // If ALL checklist items across all modes are completed:
+    if (targetIdx === -1) {
+      playSoundChime('complete');
+      speakUtterance('All checklist items completed!');
+      return;
+    }
+
+    // Switch mode if transitioning to next mode
+    if (targetMode !== currMode) {
+      setCurrentMode(targetMode);
+      currentModeRef.current = targetMode;
+      localStorage.setItem('fm_current_mode', targetMode);
+    }
+
+    // Mark the checklist item as checked
+    const targetOpts = [...(currentModes[targetMode]?.options || [])];
+    const itemText = targetOpts[targetIdx] || 'Item';
+    const activeChecked = [...(currentSelections[targetMode] || [])];
+
+    let updatedSelectionsList: number[];
+    let updatedTargetOpts = targetOpts;
+
+    if (moveCheckedToBottomRef.current) {
+      const movedItem = updatedTargetOpts[targetIdx];
+      updatedTargetOpts.splice(targetIdx, 1);
+      updatedTargetOpts.push(movedItem);
+      const newIndex = updatedTargetOpts.length - 1;
+
+      updatedSelectionsList = activeChecked.map((oldSel) => (oldSel > targetIdx ? oldSel - 1 : oldSel));
+      if (!updatedSelectionsList.includes(newIndex)) {
+        updatedSelectionsList.push(newIndex);
+      }
+
+      setModes((prev) => ({
+        ...prev,
+        [targetMode]: {
+          ...prev[targetMode],
+          options: updatedTargetOpts,
+        },
+      }));
+      modesRef.current = {
+        ...modesRef.current,
+        [targetMode]: {
+          ...modesRef.current[targetMode],
+          options: updatedTargetOpts,
+        },
+      };
+    } else {
+      updatedSelectionsList = activeChecked.includes(targetIdx) ? activeChecked : [...activeChecked, targetIdx];
+    }
+
+    const updatedSelections = {
+      ...currentSelections,
+      [targetMode]: updatedSelectionsList,
+    };
+    setSelections(updatedSelections);
+    selectionsRef.current = updatedSelections;
+    localStorage.setItem('fm_sel_' + targetMode, JSON.stringify(updatedSelectionsList));
+
+    playSoundChime('check');
+
+    // In full card mode, advance to following card
+    if (isFull) {
+      const nextCardIdx = Math.min(targetIdx + 1, Math.max(0, updatedTargetOpts.length - 1));
+      setFullModeIndices((prev) => {
+        const updated = { ...prev, [targetMode]: nextCardIdx };
+        localStorage.setItem('fm_full_mode_indices', JSON.stringify(updated));
+        return updated;
+      });
+      fullModeIndicesRef.current = { ...fullModeIndicesRef.current, [targetMode]: nextCardIdx };
+    }
+
+    // Trigger celebration splash if mode is complete
+    if (updatedSelectionsList.length >= updatedTargetOpts.length && updatedTargetOpts.length > 0) {
+      setTimeout(() => playSoundChime('complete'), 150);
+      triggerCompletedSplash(targetMode);
+    }
+
+    // Speak confirmation in AI voice
+    speakUtterance(`Marked: ${itemText}`);
+  }, [speakUtterance, triggerCompletedSplash]);
 
   const handleVoiceBack = useCallback(() => {
     if (minimizedRef.current) {
@@ -4662,126 +4896,42 @@ export default function App() {
                   particleCount={12}
                   animationTime={450}
                 />
-                {voiceCommandsEnabled && (
-                  <div style={{ fontSize: '9px', lineHeight: 1.45, color: isLight ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.75)', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', borderRadius: '7px', padding: '8px 10px', border: '1px solid var(--divider)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {/* Live Mic Volume Level Meter */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', padding: '5px 7px', borderRadius: '5px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '8px', fontWeight: '700' }}>
-                        <span style={{ color: isLight ? '#475569' : '#94a3b8' }}>Gemini Audio Stream:</span>
-                        <span style={{ color: micAudioLevel > 10 ? '#00e676' : (isLight ? '#64748b' : '#94a3b8') }}>
-                          {micAudioLevel > 10 ? `Vocal Energy (${micAudioLevel}%)` : 'Silent / Standby'}
-                        </span>
-                      </div>
-                      <div style={{ width: '100%', height: '5px', background: isLight ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            height: '100%',
-                            width: `${Math.max(3, micAudioLevel)}%`,
-                            background: micAudioLevel > 12 ? '#00e676' : '#38bdf8',
-                            transition: 'width 0.08s ease-out',
-                          }}
-                        />
-                      </div>
-                    </div>
-
-                    <div style={{ fontWeight: '700', color: isLight ? '#0284c7' : '#38bdf8', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                          <line x1="12" y1="19" x2="12" y2="22" />
-                        </svg>
-                        Gemini 2.5 AI Listener:
-                      </span>
-                      <button
-                        onClick={requestMicPermission}
-                        style={{
-                          background: isLight ? 'rgba(2, 132, 199, 0.12)' : 'rgba(56, 189, 248, 0.15)',
-                          color: isLight ? '#0284c7' : '#38bdf8',
-                          border: '1px solid ' + (isLight ? 'rgba(2, 132, 199, 0.25)' : 'rgba(56, 189, 248, 0.3)'),
-                          borderRadius: '4px',
-                          padding: '2px 6px',
-                          fontSize: '8px',
-                          fontWeight: '700',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {voiceMicGranted ? '✓ Mic Active' : 'Grant Mic Permission'}
-                      </button>
-                    </div>
-
-                    {/* Speech Voice Output Selector */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)', padding: '6px 8px', borderRadius: '6px', border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)') }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span style={{ fontWeight: '700', fontSize: '8px', color: isLight ? '#334155' : '#e2e8f0', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                            <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                            <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
-                          </svg>
-                          Voice Speech Engine:
-                        </span>
-                        <button
-                          onClick={() => {
-                            speakUtterance('Next, verify your 15-minute entry trigger and manage risk.');
-                          }}
-                          style={{
-                            background: isLight ? 'rgba(2, 132, 199, 0.12)' : 'rgba(56, 189, 248, 0.16)',
-                            color: isLight ? '#0284c7' : '#38bdf8',
-                            border: '1px solid ' + (isLight ? 'rgba(2, 132, 199, 0.25)' : 'rgba(56, 189, 248, 0.3)'),
-                            borderRadius: '4px',
-                            padding: '1px 6px',
-                            fontSize: '8px',
-                            fontWeight: '700',
-                            cursor: 'pointer',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            gap: '3px',
-                          }}
-                          title="Preview the speech voice output"
-                        >
-                          🔊 Test Voice
-                        </button>
-                      </div>
-
-                      <select
-                        value={selectedVoiceUri}
-                        onChange={(e) => handleVoiceChange(e.target.value)}
-                        style={{
-                          width: '100%',
-                          background: isLight ? '#ffffff' : '#0f172a',
-                          color: isLight ? '#0f172a' : '#f8fafc',
-                          border: '1px solid ' + (isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.2)'),
-                          borderRadius: '5px',
-                          padding: '4px 8px',
-                          fontSize: '8.5px',
-                          fontWeight: '600',
-                          cursor: 'pointer',
-                          outline: 'none',
-                        }}
-                      >
-                        {availableSystemVoices.map((gv) => (
-                          <option key={gv.uri} value={gv.uri}>
-                            {gv.name} {gv.description ? `(${gv.description})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div style={{ fontSize: '8px', opacity: 0.85, lineHeight: 1.4 }}>
-                      Uses native browser speech synthesis (free, offline, unlimited). Speak naturally: <em>"next"</em>, <em>"back"</em>, <em>"open calendar"</em>, <em>"open checklist"</em>, <em>"what next"</em>.
-                    </div>
-
-                    {voiceError && (
-                      <div style={{ color: '#ff5252', fontSize: '8.5px', marginTop: '2px', fontWeight: '600', lineHeight: 1.35 }}>
-                        ⚠️ {voiceError}
-                        <div style={{ fontSize: '8px', opacity: 0.85, marginTop: '2px' }}>
-                          (If in iframe preview, open in a new tab or click "Grant Mic Permission" above to allow microphone access)
-                        </div>
-                      </div>
-                    )}
+                {voiceCommandsEnabled && voiceError && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', color: '#ff5252', fontSize: '8.5px', marginTop: '4px', fontWeight: '600' }}>
+                    <span>⚠️ {voiceError}</span>
+                    <button
+                      onClick={requestMicPermission}
+                      style={{
+                        background: 'rgba(255, 82, 82, 0.15)',
+                        color: '#ff5252',
+                        border: '1px solid rgba(255, 82, 82, 0.3)',
+                        borderRadius: '4px',
+                        padding: '1px 6px',
+                        fontSize: '8px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Retry
+                    </button>
                   </div>
                 )}
+              </div>
+
+              {/* Live Voice Copilot Microphone Section */}
+              <div className="setting-section" style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: '1px solid var(--divider)', paddingTop: '10px' }}>
+                <span className="setting-label" style={{ fontSize: '9.5px', color: isLight ? 'rgba(0,0,0,0.5)' : 'rgba(255, 255, 255, 0.5)', textTransform: 'uppercase', letterSpacing: '0.12em', fontWeight: 'bold', textAlign: 'left' }}>
+                  Live Voice Copilot Mic
+                </span>
+                <GooeyNav
+                  items={[
+                    { label: '🎙️ Mic Live', onClick: () => handleLiveMicMutedChange(false) },
+                    { label: '🔇 Mic Muted', onClick: () => handleLiveMicMutedChange(true) },
+                  ]}
+                  activeIndex={liveMicMuted ? 1 : 0}
+                  particleCount={12}
+                  animationTime={450}
+                />
               </div>
 
               {/* Wallpaper Background Settings */}
@@ -5249,14 +5399,18 @@ export default function App() {
             isSpeaking={whatNextIsSpeaking}
             micAudioLevel={micAudioLevel}
             voiceIsListening={voiceIsListening}
+            liveMicMuted={liveMicMuted}
             accentColor={modes[currentMode]?.accent || '#38bdf8'}
             extraHeight={expandedExtraHeight}
+            modes={modes}
+            currentMode={currentMode}
+            selections={selections}
             onAskWhatNext={askWhatNext}
-            onSubmitQuery={processWhatNextQuery}
+            onSubmitQuery={(text, fromLive) => processWhatNextQuery(text, fromLive)}
             onExitWhatNext={() => handleWhatNextToggle(false)}
             onReplaySpeech={() => {
               if (whatNextResult) {
-                const speech = whatNextResult.spokenSpeech || `Next step: ${whatNextResult.nextAction}`;
+                const speech = whatNextResult.spokenSpeech || `Next 3 steps: ${whatNextResult.nextAction}`;
                 speakUtterance(speech);
               }
             }}

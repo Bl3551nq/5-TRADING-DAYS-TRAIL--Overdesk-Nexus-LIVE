@@ -1,5 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { unlockAudioContext } from '../lib/speechVoice';
+import { GeminiLiveClient, LiveConnectionState } from '../utils/geminiLiveClient';
+import { AudioSparkIcon } from './AudioSparkIcon';
 
 export interface UpcomingItem {
   action: string;
@@ -31,10 +33,14 @@ interface WhatNextViewProps {
   isSpeaking: boolean;
   micAudioLevel: number;
   voiceIsListening: boolean;
+  liveMicMuted?: boolean;
   accentColor?: string;
   extraHeight?: number;
+  modes?: Record<string, { title: string; options: string[]; accent?: string }>;
+  currentMode?: string;
+  selections?: Record<string, number[]>;
   onAskWhatNext: () => void;
-  onSubmitQuery: (text: string) => void;
+  onSubmitQuery: (text: string, fromLiveVoice?: boolean) => void;
   onExitWhatNext: () => void;
   onJumpToStep?: (modeName: string, itemIdx?: number) => void;
   onReplaySpeech?: () => void;
@@ -50,48 +56,179 @@ export const WhatNextView: React.FC<WhatNextViewProps> = ({
   isSpeaking,
   micAudioLevel,
   voiceIsListening,
+  liveMicMuted = false,
   accentColor = '#38bdf8',
   extraHeight = 0,
+  modes,
+  currentMode,
+  selections,
   onAskWhatNext,
   onSubmitQuery,
   onExitWhatNext,
   onJumpToStep,
   onReplaySpeech,
 }) => {
-  const [inputText, setInputText] = useState('');
-  const inputRef = useRef<HTMLInputElement>(null);
+  // --- Integrated Gemini 3.8 Live API Voice Copilot ---
+  const liveClientRef = useRef<GeminiLiveClient | null>(null);
+  const [liveState, setLiveState] = useState<LiveConnectionState>('DISCONNECTED');
+  const [liveStateDetail, setLiveStateDetail] = useState<string>('Connecting voice...');
+  const [lastUserSpeech, setLastUserSpeech] = useState<string>('');
+  const [lastModelSpeech, setLastModelSpeech] = useState<string>('');
+  const [liveAudioLevel, setLiveAudioLevel] = useState<number>(0);
+  const [liveModelSpeaking, setLiveModelSpeaking] = useState<boolean>(false);
+  const [liveError, setLiveError] = useState<string | null>(null);
 
-  // Auto-focus input if phase is LISTENING
+  // Construct complete trading checklist context string with checked/done status
+  const getTradingPlanContext = useCallback((): string => {
+    if (!modes) return '';
+    const modeKeys = Object.keys(modes);
+    let globalStep = 1;
+
+    const sections = modeKeys.map((k, mIdx) => {
+      const m = modes[k];
+      const isCurrent = k === currentMode;
+      const checkedIndices = selections?.[k] || [];
+      const opts = (m.options || [])
+        .map((o, idx) => {
+          const isDone = checkedIndices.includes(idx);
+          const stepNum = globalStep++;
+          return `    Step ${stepNum}. [${isDone ? 'DONE ✓' : 'PENDING ⏱️'}] ${o}`;
+        })
+        .join('\n');
+      return `Mode ${mIdx + 1}: ${m.title || k}${isCurrent ? ' [CURRENT ACTIVE MODE]' : ''}\n${opts}`;
+    });
+
+    return (
+      `TRADER'S COMPLETE SEQUENTIAL CHECKLIST & CURRENT STATUS:\n\n` +
+      sections.join('\n\n') +
+      `\n\nCORE DIRECTIVE: When the trader tells you what they have completed, done, or concluded (or asks what is next), identify their concluded step and verbally tell them the NEXT 3 THINGS on their checklist in sequential order (1, 2, 3).`
+    );
+  }, [modes, currentMode, selections]);
+
+  // Connect Gemini Live API on mount so voice conversation is always integrated into sequence
   useEffect(() => {
-    if (phase === 'LISTENING' && inputRef.current) {
-      inputRef.current.focus();
-    }
-  }, [phase]);
+    if (!liveClientRef.current) {
+      const client = new GeminiLiveClient();
+      liveClientRef.current = client;
 
-  const handleSubmit = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    unlockAudioContext();
-    if (inputText.trim()) {
-      onSubmitQuery(inputText.trim());
-      setInputText('');
+      client.onStateChange = (state, details) => {
+        setLiveState(state);
+        if (details) setLiveStateDetail(details);
+        if (state === 'CONNECTED') setLiveError(null);
+      };
+
+      client.onAudioLevel = (level) => {
+        setLiveAudioLevel(level);
+      };
+
+      client.onMessage = (msg) => {
+        if (msg.role === 'model') {
+          setLiveModelSpeaking(true);
+          if (msg.text) {
+            setLastModelSpeech(msg.text);
+          }
+        } else if (msg.role === 'user') {
+          // Spoken voice detected: feed directly into plan sequence matcher for visual UI updates
+          if (msg.text && msg.text.trim()) {
+            setLastUserSpeech(msg.text.trim());
+            onSubmitQuery(msg.text.trim(), true);
+          }
+        }
+      };
+
+      client.onInterrupted = () => {
+        setLiveModelSpeaking(false);
+      };
+
+      client.onError = (err) => {
+        setLiveError(err);
+      };
+
+      const planContext = getTradingPlanContext();
+      client.start(planContext).catch((err) => {
+        setLiveError(err?.message || 'Live session note');
+      });
+    }
+
+    return () => {
+      if (liveClientRef.current) {
+        liveClientRef.current.disconnect();
+        liveClientRef.current = null;
+      }
+    };
+  }, [getTradingPlanContext, onSubmitQuery]);
+
+  // Keep live voice session in sync with current checklist state and selections
+  useEffect(() => {
+    if (liveClientRef.current && liveState === 'CONNECTED') {
+      const planContext = getTradingPlanContext();
+      liveClientRef.current.sendContext(planContext);
+    }
+  }, [getTradingPlanContext, liveState]);
+
+  // Sync mic muted state from Settings
+  useEffect(() => {
+    if (liveClientRef.current) {
+      liveClientRef.current.setMicMuted(liveMicMuted);
+    }
+  }, [liveMicMuted]);
+
+  const handleInterruptLive = () => {
+    if (liveClientRef.current) {
+      liveClientRef.current.stopOutputPlayback();
+      setLiveModelSpeaking(false);
     }
   };
 
-  const dynamicHeight = Math.max(360, 380 + extraHeight);
+  const dynamicHeight = Math.max(260, 290 + extraHeight);
 
-  // Extract up to 3 upcoming sequential items from the result
-  const upcomingList: UpcomingItem[] =
-    result?.upcomingActions && result.upcomingActions.length > 0
-      ? result.upcomingActions
-      : result?.nextAction
-      ? [
-          {
-            action: result.nextAction,
-            mode: result.nextMode,
-            itemIndex: result.nextItemIndex,
-          },
-        ]
-      : [];
+  // Extract up to 3 upcoming sequential items from the sequence result or pending modes
+  const upcomingList: UpcomingItem[] = (() => {
+    if (result?.upcomingActions && result.upcomingActions.length > 0) {
+      return result.upcomingActions.slice(0, 3);
+    }
+    if (result?.nextAction && result.nextAction !== 'Tell me what you completed first') {
+      return [
+        {
+          action: result.nextAction,
+          mode: result.nextMode,
+          itemIndex: result.nextItemIndex,
+        },
+      ];
+    }
+    if (modes) {
+      const modeKeys = Object.keys(modes);
+      const currIdx = currentMode ? modeKeys.indexOf(currentMode) : 0;
+      const orderedKeys = [
+        ...modeKeys.slice(currIdx >= 0 ? currIdx : 0),
+        ...modeKeys.slice(0, currIdx >= 0 ? currIdx : 0),
+      ];
+      const pending: UpcomingItem[] = [];
+      for (const mKey of orderedKeys) {
+        const opts = modes[mKey]?.options || [];
+        const checked = selections?.[mKey] || [];
+        for (let i = 0; i < opts.length; i++) {
+          if (!checked.includes(i)) {
+            pending.push({
+              action: opts[i],
+              mode: modes[mKey]?.title || mKey,
+              itemIndex: i,
+            });
+            if (pending.length >= 3) return pending;
+          }
+        }
+      }
+      return pending;
+    }
+    return [];
+  })();
+
+  const currentModeOptions = (currentMode && modes?.[currentMode]?.options) || [];
+  const checkedCurrentIndices = (currentMode && selections?.[currentMode]) || [];
+  const pendingOptions = currentModeOptions
+    .map((opt, idx) => ({ text: opt, idx }))
+    .filter((o) => !checkedCurrentIndices.includes(o.idx))
+    .slice(0, 3);
 
   return (
     <div
@@ -104,13 +241,16 @@ export const WhatNextView: React.FC<WhatNextViewProps> = ({
         width: '100%',
         minHeight: `${dynamicHeight}px`,
         boxSizing: 'border-box',
-        padding: isEyeMode ? '8px 6px 14px' : '10px 12px 16px',
+        padding: isEyeMode ? '8px 6px 12px' : '10px 10px 14px',
         position: 'relative',
         userSelect: 'none',
         animation: 'fadeIn 0.25s ease-out',
+        gap: '8px',
       }}
     >
-      {/* Top Status & Speaking Indicator */}
+      {/* ========================================================================= */}
+      {/* 1. TOP HEADER: PLAN SEQUENCE & LIVE VOICE CONTROLS (NO CHAT OPTION)       */}
+      {/* ========================================================================= */}
       <div
         style={{
           width: '100%',
@@ -118,689 +258,410 @@ export const WhatNextView: React.FC<WhatNextViewProps> = ({
           justifyContent: 'space-between',
           alignItems: 'center',
           paddingBottom: '4px',
-          minHeight: '22px',
+          borderBottom: `1px solid ${isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.07)'}`,
         }}
       >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '7px', textAlign: 'left' }}>
+          <AudioSparkIcon size={18} color={accentColor} isAnimated={liveState === 'CONNECTED' || liveModelSpeaking} />
+          <div>
+            <div
+              style={{
+                fontSize: '12px',
+                fontWeight: 900,
+                letterSpacing: '0.04em',
+                color: isLight ? '#0f172a' : '#f8fafc',
+                lineHeight: 1.15,
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <span>PLAN SEQUENCE</span>
+              <span
+                style={{
+                  fontSize: '8.5px',
+                  fontWeight: 800,
+                  color: accentColor,
+                  background: isLight ? 'rgba(2, 132, 199, 0.1)' : 'rgba(56, 189, 248, 0.15)',
+                  padding: '1px 6px',
+                  borderRadius: '999px',
+                }}
+              >
+                LIVE VOICE
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Live Voice Controls: Stop Audio, Close View (Mic is configured in Settings) */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span
+          {liveModelSpeaking && (
+            <button
+              type="button"
+              onClick={handleInterruptLive}
+              style={{
+                background: '#ef4444',
+                color: '#ffffff',
+                border: 'none',
+                borderRadius: '999px',
+                fontSize: '8.5px',
+                fontWeight: 800,
+                padding: '3px 8px',
+                cursor: 'pointer',
+                animation: 'pulse 1s infinite',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '3px',
+              }}
+              title="Interrupt speech"
+            >
+              ⏹ Stop
+            </button>
+          )}
+
+          {/* Close button */}
+          <button
+            type="button"
+            onClick={onExitWhatNext}
             style={{
-              fontSize: '9.5px',
-              letterSpacing: '0.12em',
-              fontWeight: 800,
-              textTransform: 'uppercase',
-              color: accentColor,
+              background: 'transparent',
+              border: 'none',
+              color: isLight ? '#94a3b8' : '#64748b',
+              fontSize: '14px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              padding: '2px 4px',
+              lineHeight: 1,
+            }}
+            title="Close Plan Sequence"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 2. NEXT 3 CHECKLIST ACTIONS                                               */}
+      {/* ========================================================================= */}
+      <div
+        style={{
+          width: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '6px',
+          boxSizing: 'border-box',
+        }}
+      >
+        {/* Ordered Upcoming Checklist Cards */}
+        <div
+          style={{
+            width: '100%',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '6px',
+            maxWidth: '460px',
+            margin: '0 auto',
+          }}
+        >
+          {upcomingList.length === 0 ? (
+            <div
+              style={{
+                padding: '16px 12px',
+                borderRadius: '8px',
+                background: isLight ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.04)',
+                textAlign: 'center',
+                fontSize: '12px',
+                fontWeight: 700,
+                color: isLight ? '#475569' : '#94a3b8',
+              }}
+            >
+              All checklist actions completed!
+            </div>
+          ) : (
+            upcomingList.map((item, idx) => {
+              const isFirst = idx === 0;
+              return (
+                <div
+                  key={`${item.action}-${idx}`}
+                  onClick={() => {
+                    if (item.mode && onJumpToStep) {
+                      onJumpToStep(item.mode, item.itemIndex);
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    padding: isFirst ? '9px 12px' : '7px 10px',
+                    background: isFirst
+                      ? isLight
+                        ? 'rgba(2, 132, 199, 0.09)'
+                        : 'rgba(56, 189, 248, 0.13)'
+                      : isLight
+                      ? 'rgba(0, 0, 0, 0.03)'
+                      : 'rgba(255, 255, 255, 0.04)',
+                    border: isFirst
+                      ? `1.5px solid ${isLight ? 'rgba(2, 132, 199, 0.35)' : 'rgba(56, 189, 248, 0.45)'}`
+                      : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)'}`,
+                    borderRadius: '8px',
+                    cursor: item.mode && onJumpToStep ? 'pointer' : 'default',
+                    textAlign: 'left',
+                    transition: 'all 0.15s ease',
+                    boxShadow:
+                      isFirst && !isLight
+                        ? `0 0 12px ${accentColor}18`
+                        : 'none',
+                  }}
+                  title={item.mode ? `Click to jump to ${item.mode} in checklist` : undefined}
+                >
+                  <span
+                    style={{
+                      width: '22px',
+                      height: '22px',
+                      borderRadius: '50%',
+                      background: isFirst
+                        ? accentColor
+                        : isLight
+                        ? 'rgba(0, 0, 0, 0.1)'
+                        : 'rgba(255, 255, 255, 0.12)',
+                      color: isFirst ? '#0f172a' : isLight ? '#334155' : '#e2e8f0',
+                      fontSize: '11px',
+                      fontWeight: 900,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      flexShrink: 0,
+                    }}
+                  >
+                    {idx + 1}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: isFirst ? '13px' : '12px',
+                      fontWeight: isFirst ? 800 : 600,
+                      color: isLight ? '#0f172a' : '#f8fafc',
+                      lineHeight: 1.3,
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {item.action}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 3. INTEGRATED LIVE VOICE WAVEFORM & REAL-TIME AUDIO FEEDBACK              */}
+      {/* ========================================================================= */}
+      <div
+        style={{
+          width: '100%',
+          maxWidth: '460px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '6px',
+          boxSizing: 'border-box',
+          background: isLight ? 'rgba(0,0,0,0.025)' : 'rgba(0,0,0,0.22)',
+          borderRadius: '9px',
+          padding: '8px 10px',
+          border: `1px solid ${isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.07)'}`,
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            width: '100%',
+          }}
+        >
+          {/* Animated Waveform Visualizer */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+            {[20, 50, 80, 100, 80, 50, 20].map((baseH, bIdx) => {
+              const activeScale = liveModelSpeaking
+                ? Math.min(1.8, 0.6 + Math.random() * 1.2)
+                : Math.min(1.8, 0.3 + (liveAudioLevel / 100) * 1.5);
+              return (
+                <div
+                  key={bIdx}
+                  style={{
+                    width: '3px',
+                    height: `${Math.max(3, (baseH / 100) * 14 * activeScale)}px`,
+                    background: liveModelSpeaking ? '#00e676' : accentColor,
+                    borderRadius: '2px',
+                    transition: 'height 0.08s ease-out',
+                  }}
+                />
+              );
+            })}
+            <span
+              style={{
+                fontSize: '9px',
+                fontWeight: 700,
+                color: liveModelSpeaking
+                  ? '#00e676'
+                  : liveMicMuted
+                  ? '#ef4444'
+                  : liveState === 'ERROR'
+                  ? '#f59e0b'
+                  : isLight
+                  ? '#64748b'
+                  : '#94a3b8',
+                marginLeft: '5px',
+              }}
+            >
+              {liveModelSpeaking
+                ? 'Gemini 3.8 Live Speaking...'
+                : liveMicMuted
+                ? 'Mic Muted (Settings)'
+                : liveState === 'ERROR'
+                ? 'Live Voice Offline'
+                : 'Listening: Speak what step you completed...'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+            {/* Reconnect button if live voice session failed */}
+            {liveState === 'ERROR' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (liveClientRef.current) {
+                    setLiveError(null);
+                    setLiveState('CONNECTING');
+                    const planContext = getTradingPlanContext();
+                    liveClientRef.current.start(planContext).catch(() => {});
+                  }
+                }}
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 800,
+                  color: '#f59e0b',
+                  background: 'rgba(245, 158, 11, 0.12)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  padding: '2px 6px',
+                }}
+                title="Retry connecting to Gemini Live Voice"
+              >
+                ↻ Reconnect
+              </button>
+            )}
+
+            {/* Replay Speech Button */}
+            {onReplaySpeech && (result?.spokenSpeech || lastModelSpeech) && (
+              <button
+                type="button"
+                onClick={() => {
+                  unlockAudioContext();
+                  onReplaySpeech();
+                }}
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  color: accentColor,
+                  background: isLight ? 'rgba(2, 132, 199, 0.08)' : 'rgba(56, 189, 248, 0.12)',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  padding: '2px 6px',
+                }}
+              >
+                🔊 Replay
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Live Audio Feedback Transcript Subtitle Banner */}
+        {(lastModelSpeech || lastUserSpeech || transcript) && (
+          <div
+            style={{
+              fontSize: '10.5px',
+              lineHeight: 1.35,
+              color: isLight ? '#1e293b' : '#f1f5f9',
+              textAlign: 'left',
+              padding: '4px 6px',
+              borderRadius: '6px',
+              background: isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.05)',
               display: 'flex',
               alignItems: 'center',
               gap: '5px',
             }}
           >
-            <span
-              style={{
-                width: '6px',
-                height: '6px',
-                borderRadius: '50%',
-                background: accentColor,
-                display: 'inline-block',
-                boxShadow: `0 0 8px ${accentColor}`,
-                animation: phase === 'LISTENING' ? 'pulse 1.2s infinite' : 'none',
-              }}
-            />
-            {phase === 'LISTENING'
-              ? 'LISTENING...'
-              : phase === 'ANALYZING'
-              ? 'ANALYZING...'
-              : phase === 'RESULT'
-              ? 'SEQUENCE RESOLVED'
-              : 'VOICE COPILOT READY'}
-          </span>
-        </div>
-
-        {voiceIsListening && (
-          <span
-            style={{
-              fontSize: '8.5px',
-              fontWeight: 700,
-              color: '#00e676',
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: '4px',
-              opacity: 0.85,
-            }}
-          >
-            <span
-              style={{
-                width: '5px',
-                height: '5px',
-                borderRadius: '50%',
-                background: '#00e676',
-                animation: 'pulse 1.5s infinite',
-              }}
-            />
-            Mic Active
-          </span>
-        )}
-      </div>
-
-      {/* Main Center Content Body */}
-      <div
-        style={{
-          flex: 1,
-          width: '100%',
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '8px 4px',
-          gap: '10px',
-          textAlign: 'center',
-        }}
-      >
-        {/* Prominent "WHAT NEXT?" Text Header - Only shown before resolution */}
-        {phase !== 'RESULT' && (
-          <div style={{ position: 'relative', display: 'inline-block' }}>
-            <h1
-              id="what-next-title"
-              style={{
-                fontSize: '34px',
-                fontWeight: 900,
-                letterSpacing: '0.04em',
-                lineHeight: 1.1,
-                margin: 0,
-                color: isLight ? '#0f172a' : '#f8fafc',
-                textShadow: isLight
-                  ? '0 2px 8px rgba(0,0,0,0.06)'
-                  : `0 0 24px ${accentColor}44, 0 2px 8px rgba(0,0,0,0.8)`,
-              }}
-            >
-              WHAT NEXT?
-            </h1>
-          </div>
-        )}
-
-        {/* Phase: LISTENING or PROMPT */}
-        {(phase === 'LISTENING' || phase === 'PROMPT') && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '12px',
-              width: '100%',
-              maxWidth: '380px',
-            }}
-          >
-            {/* Glowing audio visualizer / interactive mic wave button */}
-            <button
-              type="button"
-              onClick={() => {
-                unlockAudioContext();
-                onAskWhatNext();
-              }}
-              style={{
-                width: '68px',
-                height: '68px',
-                borderRadius: '50%',
-                background: voiceIsListening
-                  ? (isLight ? 'rgba(56, 189, 248, 0.18)' : 'rgba(56, 189, 248, 0.25)')
-                  : (isLight ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.08)'),
-                border: `2.5px solid ${voiceIsListening ? accentColor : (isLight ? 'rgba(0,0,0,0.2)' : 'rgba(255,255,255,0.25)')}`,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: voiceIsListening
-                  ? `0 0 ${Math.max(16, micAudioLevel * 0.5)}px ${accentColor}aa`
-                  : 'none',
-                transform: `scale(${1 + Math.min(0.22, (micAudioLevel / 100) * 0.35)})`,
-                transition: 'transform 0.08s ease-out, box-shadow 0.08s ease-out, background 0.2s ease',
-                position: 'relative',
-                cursor: 'pointer',
-                outline: 'none',
-              }}
-              title={voiceIsListening ? "Mic is listening... Tap to restart voice capture" : "Tap to activate Microphone"}
-            >
-              <svg
-                viewBox="0 0 24 24"
-                width="28"
-                height="28"
-                fill="none"
-                stroke={voiceIsListening ? accentColor : (isLight ? '#475569' : '#cbd5e1')}
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="22" />
-              </svg>
-            </button>
-
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px' }}>
-              <span
-                style={{
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  color: voiceIsListening ? (isLight ? '#0284c7' : '#38bdf8') : (isLight ? '#64748b' : '#94a3b8'),
-                  letterSpacing: '0.02em',
-                }}
-              >
-                {voiceIsListening ? '🎙️ Mic Active — Speak anytime or type below' : '🎙️ Tap Mic to Enable Voice Listening'}
-              </span>
-              <p
-                style={{
-                  fontSize: '12px',
-                  lineHeight: 1.45,
-                  color: isLight ? 'rgba(15, 23, 42, 0.75)' : 'rgba(241, 245, 249, 0.8)',
-                  margin: 0,
-                  maxWidth: '320px',
-                  fontWeight: 500,
-                }}
-              >
-                Say what you just concluded in your trading plan, and the next 3 sequential checklist steps will appear.
-              </p>
-            </div>
-
-            {/* Interim live speech transcript preview */}
-            {transcript && (
-              <div
-                style={{
-                  background: isLight ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.06)',
-                  border: `1px solid ${accentColor}55`,
-                  borderRadius: '10px',
-                  padding: '6px 12px',
-                  fontSize: '12px',
-                  fontStyle: 'italic',
-                  color: isLight ? '#0369a1' : '#7dd3fc',
-                  maxWidth: '100%',
-                  wordBreak: 'break-word',
-                  animation: 'fadeIn 0.15s ease-in-out',
-                }}
-              >
-                🎙️ "{transcript}"
-              </div>
-            )}
-
-            {/* Quick text input form */}
-            <form
-              onSubmit={handleSubmit}
-              style={{
-                display: 'flex',
-                width: '100%',
-                maxWidth: '320px',
-                gap: '6px',
-                marginTop: '4px',
-                position: 'relative',
-                zIndex: 10,
-              }}
-            >
-              <input
-                ref={inputRef}
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                placeholder="e.g. 'Marked key zones' or 'Placed order'..."
-                style={{
-                  flex: 1,
-                  background: isLight ? '#ffffff' : '#0f172a',
-                  border: `1.5px solid ${isLight ? 'rgba(0,0,0,0.22)' : 'rgba(255,255,255,0.25)'}`,
-                  borderRadius: '8px',
-                  padding: '7px 11px',
-                  fontSize: '11.5px',
-                  color: isLight ? '#0f172a' : '#f8fafc',
-                  outline: 'none',
-                  boxShadow: isLight ? '0 1px 4px rgba(0,0,0,0.1)' : '0 2px 8px rgba(0,0,0,0.4)',
-                }}
-              />
-              <button
-                type="submit"
-                disabled={!inputText.trim()}
-                style={{
-                  background: inputText.trim()
-                    ? (isLight ? '#0284c7' : '#38bdf8')
-                    : (isLight ? '#cbd5e1' : '#334155'),
-                  color: inputText.trim()
-                    ? '#ffffff'
-                    : (isLight ? '#64748b' : '#94a3b8'),
-                  border: 'none',
-                  borderRadius: '8px',
-                  padding: '0 14px',
-                  fontSize: '11.5px',
-                  fontWeight: 800,
-                  cursor: inputText.trim() ? 'pointer' : 'default',
-                  opacity: 1,
-                  boxShadow: inputText.trim()
-                    ? '0 2px 8px rgba(2, 132, 199, 0.4)'
-                    : '0 2px 4px rgba(0, 0, 0, 0.3)',
-                  transition: 'all 0.15s ease',
-                  position: 'relative',
-                  zIndex: 20,
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                Send →
-              </button>
-            </form>
-          </div>
-        )}
-
-        {/* Phase: ANALYZING */}
-        {phase === 'ANALYZING' && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '14px',
-              maxWidth: '340px',
-              padding: '12px 0',
-            }}
-          >
-            <div
-              style={{
-                width: '48px',
-                height: '48px',
-                borderRadius: '50%',
-                border: `3px solid ${isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)'}`,
-                borderTopColor: accentColor,
-                animation: 'spin 0.8s linear infinite',
-              }}
-            />
-            <div>
-              <h3
-                style={{
-                  fontSize: '17px',
-                  fontWeight: 800,
-                  margin: '0 0 4px 0',
-                  color: isLight ? '#0f172a' : '#f8fafc',
-                  letterSpacing: '0.04em',
-                }}
-              >
-                FINDING UPCOMING ACTIONS...
-              </h3>
-              <p
-                style={{
-                  fontSize: '11.5px',
-                  color: isLight ? 'rgba(0,0,0,0.6)' : 'rgba(255,255,255,0.6)',
-                  margin: 0,
-                }}
-              >
-                Scanning checklist sequence for next 3 actions...
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Phase: RESULT */}
-        {phase === 'RESULT' && result && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '10px',
-              width: '100%',
-              flex: 1,
-              padding: '4px 2px',
-              boxSizing: 'border-box',
-              textAlign: 'center',
-              animation: 'fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-            }}
-          >
-            {/* Concluded step indicator */}
-            <div
-              style={{
-                width: 'auto',
-                maxWidth: '96%',
-                background: isLight ? 'rgba(16, 185, 129, 0.12)' : 'rgba(6, 78, 59, 0.65)',
-                backdropFilter: 'blur(8px)',
-                borderRadius: '7px',
-                padding: '5px 12px',
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexWrap: 'wrap',
-                gap: '6px',
-                fontSize: '11px',
-                fontWeight: 800,
-                color: isLight ? '#047857' : '#34d399',
-                textAlign: 'center',
-                boxSizing: 'border-box',
-                border: isLight ? '1px solid rgba(16, 185, 129, 0.32)' : '1px solid rgba(52, 211, 153, 0.36)',
-                boxShadow: isLight ? '0 1px 4px rgba(0,0,0,0.05)' : '0 2px 8px rgba(0,0,0,0.3)',
-              }}
-            >
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', letterSpacing: '0.04em' }}>
-                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                  <polyline points="20 6 9 17 4 12" />
-                </svg>
-                CONCLUDED:
-              </span>
-              <span style={{ fontWeight: 700, color: isLight ? '#065f46' : '#a7f3d0' }}>
-                {result.matchedAction}
-              </span>
-            </div>
-
-            {/* Upcoming Sequence Header */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-                marginTop: '2px',
-              }}
-            >
-              <span
-                style={{
-                  fontSize: '10.5px',
-                  letterSpacing: '0.14em',
-                  fontWeight: 900,
-                  textTransform: 'uppercase',
-                  color: accentColor,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  textShadow: `0 0 14px ${accentColor}55`,
-                }}
-              >
-                NEXT UP ({upcomingList.length} {upcomingList.length === 1 ? 'STEP' : 'STEPS'} IN SEQUENCE)
-              </span>
-
-              {isSpeaking && (
-                <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '3px',
-                    color: '#00e676',
-                    fontSize: '9px',
-                    fontWeight: 700,
-                    letterSpacing: '0.04em',
-                    animation: 'pulse 1.2s infinite',
-                  }}
-                >
-                  🔊 SPEAKING...
-                </span>
-              )}
-            </div>
-
-            {/* Ordered Upcoming Items (N+1, N+2, N+3) */}
-            <div
-              style={{
-                width: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '6px',
-                maxWidth: '460px',
-                margin: '0 auto',
-              }}
-            >
-              {upcomingList.length === 0 ? (
-                <div
-                  style={{
-                    padding: '12px',
-                    fontSize: '13px',
-                    fontWeight: 700,
-                    color: isLight ? '#059669' : '#34d399',
-                  }}
-                >
-                  🎉 Checklist Complete! All sequential trading actions concluded.
-                </div>
-              ) : (
-                upcomingList.map((item, idx) => {
-                  const isFirst = idx === 0;
-                  return (
-                    <div
-                      key={`${item.action}-${idx}`}
-                      onClick={() => {
-                        if (item.mode && onJumpToStep) {
-                          onJumpToStep(item.mode, item.itemIndex);
-                        }
-                      }}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        gap: '10px',
-                        padding: isFirst ? '9px 12px' : '7px 11px',
-                        background: isFirst
-                          ? isLight
-                            ? 'rgba(2, 132, 199, 0.08)'
-                            : 'rgba(56, 189, 248, 0.12)'
-                          : isLight
-                          ? 'rgba(0, 0, 0, 0.03)'
-                          : 'rgba(255, 255, 255, 0.04)',
-                        border: isFirst
-                          ? `1.5px solid ${isLight ? 'rgba(2, 132, 199, 0.35)' : 'rgba(56, 189, 248, 0.4)'}`
-                          : `1px solid ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.08)'}`,
-                        borderRadius: '9px',
-                        boxShadow: isFirst
-                          ? isLight
-                            ? '0 2px 8px rgba(2, 132, 199, 0.1)'
-                            : '0 3px 12px rgba(0, 0, 0, 0.4)'
-                          : 'none',
-                        cursor: item.mode && onJumpToStep ? 'pointer' : 'default',
-                        transition: 'transform 0.12s ease, background 0.12s ease',
-                        textAlign: 'left',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (item.mode && onJumpToStep) {
-                          e.currentTarget.style.transform = 'translateX(2px)';
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (item.mode && onJumpToStep) {
-                          e.currentTarget.style.transform = 'translateX(0)';
-                        }
-                      }}
-                    >
-                      {/* Left Number Badge & Action Text */}
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flex: 1, minWidth: 0 }}>
-                        <span
-                          style={{
-                            width: isFirst ? '22px' : '19px',
-                            height: isFirst ? '22px' : '19px',
-                            borderRadius: '50%',
-                            background: isFirst
-                              ? accentColor
-                              : isLight
-                              ? 'rgba(0, 0, 0, 0.12)'
-                              : 'rgba(255, 255, 255, 0.14)',
-                            color: isFirst
-                              ? '#0f172a'
-                              : isLight
-                              ? '#334155'
-                              : '#e2e8f0',
-                            fontSize: isFirst ? '11px' : '10px',
-                            fontWeight: 900,
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                            boxShadow: isFirst ? `0 0 8px ${accentColor}88` : 'none',
-                          }}
-                        >
-                          {idx + 1}
-                        </span>
-
-                        <span
-                          style={{
-                            fontSize: isFirst ? '14px' : '12.5px',
-                            fontWeight: isFirst ? 800 : 600,
-                            color: isLight ? '#0f172a' : '#f8fafc',
-                            lineHeight: 1.25,
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {item.action}
-                        </span>
-                      </div>
-
-                      {/* Right Category Pill (shows crossed category boundary smoothly) */}
-                      {item.mode && (
-                        <div
-                          style={{
-                            fontSize: '9.5px',
-                            fontWeight: 700,
-                            color: isFirst
-                              ? isLight
-                                ? '#0369a1'
-                                : '#38bdf8'
-                              : isLight
-                              ? '#64748b'
-                              : '#94a3b8',
-                            background: isFirst
-                              ? isLight
-                                ? 'rgba(2, 132, 199, 0.12)'
-                                : 'rgba(56, 189, 248, 0.18)'
-                              : isLight
-                              ? 'rgba(0, 0, 0, 0.05)'
-                              : 'rgba(255, 255, 255, 0.06)',
-                            border: `1px solid ${
-                              isFirst
-                                ? isLight
-                                  ? 'rgba(2, 132, 199, 0.25)'
-                                  : 'rgba(56, 189, 248, 0.3)'
-                                : isLight
-                                ? 'rgba(0, 0, 0, 0.08)'
-                                : 'rgba(255, 255, 255, 0.1)'
-                            }`,
-                            borderRadius: '999px',
-                            padding: '3px 8px',
-                            whiteSpace: 'nowrap',
-                            flexShrink: 0,
-                          }}
-                          title={`Category: ${item.mode}`}
-                        >
-                          {item.mode}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Replay Voice Button */}
-            {onReplaySpeech && (
-              <div style={{ marginTop: '4px' }}>
-                <button
-                  onClick={() => {
-                    unlockAudioContext();
-                    onReplaySpeech();
-                  }}
-                  style={{
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    color: isLight ? '#0284c7' : '#38bdf8',
-                    background: isLight ? 'rgba(2, 132, 199, 0.1)' : 'rgba(56, 189, 248, 0.14)',
-                    border: `1.5px solid ${isLight ? 'rgba(2, 132, 199, 0.25)' : 'rgba(56, 189, 248, 0.35)'}`,
-                    borderRadius: '999px',
-                    padding: '4px 14px',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '5px',
-                    cursor: 'pointer',
-                    boxShadow: isLight ? '0 1px 4px rgba(0,0,0,0.05)' : '0 2px 8px rgba(0,0,0,0.3)',
-                    transition: 'all 0.15s ease',
-                  }}
-                  title="Replay Spoken Actions"
-                >
-                  <span>🔊</span>
-                  <span>Replay Voice</span>
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Phase: ERROR */}
-        {phase === 'ERROR' && (
-          <div
-            style={{
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              gap: '10px',
-              maxWidth: '320px',
-            }}
-          >
-            <div style={{ fontSize: '24px' }}>⚠️</div>
-            <div
-              style={{
-                fontSize: '12px',
-                color: '#ef4444',
-                fontWeight: 600,
-              }}
-            >
-              {error || 'Unable to process question. Please try again.'}
-            </div>
-            <button
-              onClick={onAskWhatNext}
-              style={{
-                background: accentColor,
-                color: '#0f172a',
-                border: 'none',
-                borderRadius: '8px',
-                padding: '6px 14px',
-                fontSize: '11px',
-                fontWeight: 800,
-                cursor: 'pointer',
-              }}
-            >
-              Ask "WHAT NEXT?" Again
-            </button>
+            {lastModelSpeech ? (
+              <>
+                <span style={{ color: accentColor, fontWeight: 800, fontSize: '9px' }}>COPILOT:</span>
+                <span style={{ fontStyle: 'normal' }}>{lastModelSpeech}</span>
+              </>
+            ) : lastUserSpeech ? (
+              <>
+                <span style={{ color: '#10b981', fontWeight: 800, fontSize: '9px' }}>HEARD:</span>
+                <span style={{ fontStyle: 'italic' }}>"{lastUserSpeech}"</span>
+              </>
+            ) : transcript ? (
+              <>
+                <span style={{ color: '#10b981', fontWeight: 800, fontSize: '9px' }}>HEARD:</span>
+                <span style={{ fontStyle: 'italic' }}>"{transcript}"</span>
+              </>
+            ) : null}
           </div>
         )}
       </div>
 
-      {/* Bottom Dedicated "WHAT NEXT?" Button */}
-      <div
-        style={{
-          width: '100%',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-          paddingTop: '6px',
-        }}
-      >
+      {/* ========================================================================= */}
+      {/* 4. PRIMARY WHAT NEXT ACTION BUTTON                                        */}
+      {/* ========================================================================= */}
+      <div style={{ width: '100%', display: 'flex', justifyContent: 'center', paddingTop: '2px' }}>
         <button
           id="what-next-repeat-btn"
-          onClick={onAskWhatNext}
-          title="Click to ask WHAT NEXT?"
+          onClick={() => {
+            unlockAudioContext();
+            if (result?.matchedAction && result.matchedAction !== 'Awaiting Completed Step') {
+              const query = `I completed ${result.matchedAction}`;
+              if (liveClientRef.current && liveState === 'CONNECTED') {
+                liveClientRef.current.sendText(query);
+              }
+              onSubmitQuery(query, liveState === 'CONNECTED');
+            } else {
+              const query = 'next';
+              if (liveClientRef.current && liveState === 'CONNECTED') {
+                liveClientRef.current.sendText(query);
+              }
+              onSubmitQuery(query, liveState === 'CONNECTED');
+            }
+          }}
+          title="Advance to next step"
           style={{
             borderRadius: '999px',
-            padding: '9px 28px',
+            padding: '7px 24px',
             background: isLight
               ? 'linear-gradient(135deg, #0284c7, #0369a1)'
               : 'linear-gradient(135deg, #38bdf8, #0284c7)',
             border: '2px solid rgba(255,255,255,0.3)',
-            boxShadow: `0 4px 18px ${accentColor}66, 0 2px 6px rgba(0,0,0,0.3)`,
+            boxShadow: `0 3px 14px ${accentColor}66`,
             color: '#ffffff',
-            fontSize: '13.5px',
+            fontSize: '12px',
             fontWeight: 900,
-            letterSpacing: '0.06em',
+            letterSpacing: '0.04em',
             cursor: 'pointer',
             display: 'inline-flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s ease',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.transform = 'scale(1.06)';
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.transform = 'scale(1)';
-          }}
-          onMouseDown={(e) => {
-            e.currentTarget.style.transform = 'scale(0.96)';
-          }}
-          onMouseUp={(e) => {
-            e.currentTarget.style.transform = 'scale(1.06)';
+            gap: '6px',
           }}
         >
-          <span>WHAT NEXT?</span>
+          <AudioSparkIcon size={14} color="#ffffff" isAnimated={true} />
+          <span>
+            {result?.matchedAction && result.matchedAction !== 'Awaiting Completed Step'
+              ? 'NEXT 3 STEPS IN PLAN'
+              : 'ADVANCE NEXT STEP'}
+          </span>
         </button>
       </div>
     </div>

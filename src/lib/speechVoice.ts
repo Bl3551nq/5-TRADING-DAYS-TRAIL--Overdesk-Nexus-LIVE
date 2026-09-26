@@ -1,10 +1,10 @@
 /**
- * Browser-Native Speech Synthesis Engine (src/lib/speechVoice.ts)
+ * Gemini AI Speech Synthesis Engine (src/lib/speechVoice.ts)
  * 
- * Powered exclusively by the browser's native Web Speech API (window.speechSynthesis & SpeechSynthesisUtterance).
- * - Free, unlimited, offline-capable, and zero latency.
- * - Accurate onstart / onend / onerror lifecycle tracking for real speaking status.
- * - Zero external API calls or quota limitations.
+ * Powered by Google Gemini AI Speech API (gemini-3.8-flash-lite-tts & gemini-3.8-live)
+ * - Authentic, high-fidelity AI voice personas (Zephyr, Kore, Puck, Fenrir, Charon).
+ * - Plays raw 24kHz 16-bit PCM audio stream with zero robotic browser artifacts.
+ * - Accurate onStart / onEnd / onError lifecycle tracking for speaking status visualizers.
  */
 
 export interface UnifiedVoiceOption {
@@ -15,74 +15,42 @@ export interface UnifiedVoiceOption {
   isDefault?: boolean;
 }
 
-// Built-in presets for immediate fallback before dynamic voices load
-export const GEMINI_STUDIO_VOICES: UnifiedVoiceOption[] = [
-  { uri: 'default', name: 'System Default Voice', description: 'Browser default speech synthesizer', isDefault: true },
-  { uri: 'en-US-Standard', name: 'Natural English (US)', description: 'Clear standard American accent' },
-  { uri: 'en-GB-Standard', name: 'Natural English (UK)', description: 'Articulate British accent' },
-  { uri: 'en-AU-Standard', name: 'Natural English (AU)', description: 'Australian accent' },
+// Authentic Google Gemini AI Voices
+export const GEMINI_AI_VOICES: UnifiedVoiceOption[] = [
+  { uri: 'Zephyr', name: 'Zephyr (Gemini AI)', description: 'Confident, dynamic, disciplined trader voice', isDefault: true },
+  { uri: 'Kore', name: 'Kore (Gemini AI)', description: 'Calm, articulate, warm analytical focus' },
+  { uri: 'Puck', name: 'Puck (Gemini AI)', description: 'Energetic, decisive, upbeat market momentum' },
+  { uri: 'Fenrir', name: 'Fenrir (Gemini AI)', description: 'Deep, authoritative, structured discipline' },
+  { uri: 'Charon', name: 'Charon (Gemini AI)', description: 'Steady, grounded, patient risk manager' },
 ];
 
-let activeUtterance: SpeechSynthesisUtterance | null = null;
-let cachedVoices: SpeechSynthesisVoice[] = [];
+let globalAudioCtx: AudioContext | null = null;
+let currentSourceNode: AudioBufferSourceNode | null = null;
+let activeAbortController: AbortController | null = null;
+
+function getAudioContext(): AudioContext {
+  const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!globalAudioCtx || globalAudioCtx.state === 'closed') {
+    globalAudioCtx = new AudioCtxClass({ sampleRate: 24000 });
+  }
+  return globalAudioCtx;
+}
 
 /**
- * Returns available system voices from window.speechSynthesis
+ * Returns available Gemini AI voice personas
  */
 export function getAvailableSystemVoices(): UnifiedVoiceOption[] {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    return GEMINI_STUDIO_VOICES;
-  }
-
-  const voices = window.speechSynthesis.getVoices();
-  if (!voices || voices.length === 0) {
-    return cachedVoices.length > 0 ? formatVoiceList(cachedVoices) : GEMINI_STUDIO_VOICES;
-  }
-
-  cachedVoices = voices;
-  return formatVoiceList(voices);
-}
-
-function formatVoiceList(voices: SpeechSynthesisVoice[]): UnifiedVoiceOption[] {
-  // Prioritize English voices first, then others
-  const englishVoices = voices.filter((v) => v.lang.toLowerCase().startsWith('en'));
-  const otherVoices = voices.filter((v) => !v.lang.toLowerCase().startsWith('en'));
-  const sorted = [...englishVoices, ...otherVoices];
-
-  const list = sorted.map((v) => ({
-    uri: v.voiceURI || v.name,
-    name: v.name,
-    lang: v.lang,
-    description: `${v.lang}${v.default ? ' — System Default' : ''}`,
-    isDefault: v.default,
-  }));
-
-  if (list.length === 0) {
-    return GEMINI_STUDIO_VOICES;
-  }
-
-  return list;
-}
-
-// Cache dynamic voices as soon as they become ready
-if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-  if (window.speechSynthesis.onvoiceschanged !== undefined) {
-    window.speechSynthesis.onvoiceschanged = () => {
-      cachedVoices = window.speechSynthesis.getVoices();
-    };
-  }
+  return GEMINI_AI_VOICES;
 }
 
 /**
- * Unlocks / resumes browser speech synthesis on user interaction
+ * Unlocks / resumes Web Audio context on user interaction
  */
 export function unlockAudioContext(): void {
-  if (typeof window === 'undefined') return;
   try {
-    if ('speechSynthesis' in window) {
-      if (window.speechSynthesis.paused) {
-        window.speechSynthesis.resume();
-      }
+    const ctx = getAudioContext();
+    if (ctx && ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
     }
   } catch (e) {}
 }
@@ -99,19 +67,27 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * Cancels any currently playing speech utterance
+ * Cancels any currently playing Gemini AI speech
  */
 export function stopCurrentSpeech(): void {
-  activeUtterance = null;
-  if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+  if (activeAbortController) {
     try {
-      window.speechSynthesis.cancel();
+      activeAbortController.abort();
     } catch (e) {}
+    activeAbortController = null;
+  }
+
+  if (currentSourceNode) {
+    try {
+      currentSourceNode.stop();
+      currentSourceNode.disconnect();
+    } catch (e) {}
+    currentSourceNode = null;
   }
 }
 
 /**
- * Clean text for high-fidelity speech pronunciation (replacing symbols with words)
+ * Formats text for high-fidelity speech pronunciation
  */
 export function formatTextForSpeech(text: string): string {
   return text
@@ -130,9 +106,27 @@ export function formatTextForSpeech(text: string): string {
 }
 
 /**
- * Speaks text aloud using browser native SpeechSynthesis API
+ * Converts Base64 PCM 16-bit little-endian audio to Float32Array for Web Audio playback
  */
-export function speakNaturalUtterance(
+function base64PcmToFloat32(base64: string): Float32Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  const int16 = new Int16Array(bytes.buffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768.0;
+  }
+  return float32;
+}
+
+/**
+ * Speaks text aloud using Gemini AI Text-To-Speech (gemini-3.8-flash-lite-tts)
+ */
+export async function speakNaturalUtterance(
   text: string,
   options?: {
     preferredVoiceUri?: string;
@@ -142,82 +136,75 @@ export function speakNaturalUtterance(
     onEnd?: () => void;
     onError?: (err?: any) => void;
   }
-): void {
+): Promise<void> {
   if (!text || !text.trim()) return;
 
   stopCurrentSpeech();
   unlockAudioContext();
 
-  if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
-    const error = new Error('Speech synthesis is not supported by this browser.');
-    console.warn(error.message);
-    if (options?.onError) options.onError(error);
-    return;
-  }
+  const cleanText = formatTextForSpeech(text);
+  const selectedVoice = options?.preferredVoiceUri && options.preferredVoiceUri !== 'default'
+    ? options.preferredVoiceUri
+    : 'Zephyr';
 
-  const cleanSpeech = formatTextForSpeech(text);
-  const utterance = new SpeechSynthesisUtterance(cleanSpeech);
+  const abortController = new AbortController();
+  activeAbortController = abortController;
 
-  // Keep a global reference to prevent garbage collection bugs during long speech in Chromium
-  activeUtterance = utterance;
+  try {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: cleanText,
+        voiceName: selectedVoice,
+        style: 'Confident, clear, disciplined financial trading copilot',
+      }),
+      signal: abortController.signal,
+    });
 
-  utterance.rate = options?.rate ?? 1.0;
-  utterance.pitch = options?.pitch ?? 1.0;
-
-  // Resolve selected voice
-  const availableVoices = window.speechSynthesis.getVoices();
-  if (availableVoices && availableVoices.length > 0) {
-    let matchedVoice: SpeechSynthesisVoice | undefined;
-
-    if (options?.preferredVoiceUri && options.preferredVoiceUri !== 'default') {
-      matchedVoice = availableVoices.find(
-        (v) =>
-          v.voiceURI === options.preferredVoiceUri ||
-          v.name === options.preferredVoiceUri ||
-          v.name.toLowerCase().includes(options.preferredVoiceUri!.toLowerCase())
-      );
+    if (!res.ok) {
+      throw new Error(`Gemini AI voice API returned status ${res.status}`);
     }
 
-    // Default to natural English voice if specific voice is not found
-    if (!matchedVoice) {
-      matchedVoice =
-        availableVoices.find((v) => v.default && v.lang.startsWith('en')) ||
-        availableVoices.find((v) => v.lang.startsWith('en')) ||
-        availableVoices.find((v) => v.default) ||
-        availableVoices[0];
+    const data = await res.json();
+    if (!data.audio) {
+      throw new Error('No audio returned by Gemini AI voice API');
     }
 
-    if (matchedVoice) {
-      utterance.voice = matchedVoice;
-      utterance.lang = matchedVoice.lang || 'en-US';
+    const ctx = getAudioContext();
+    if (ctx.state === 'suspended') {
+      await ctx.resume();
     }
-  }
 
-  // Real native lifecycle event listeners
-  utterance.onstart = () => {
-    if (options?.onStart) options.onStart();
-  };
-
-  utterance.onend = () => {
-    if (activeUtterance === utterance) {
-      activeUtterance = null;
-    }
-    if (options?.onEnd) options.onEnd();
-  };
-
-  utterance.onerror = (event: SpeechSynthesisErrorEvent) => {
-    if (activeUtterance === utterance) {
-      activeUtterance = null;
-    }
-    // Cancelled / interrupted is a normal user interruption (e.g. hitting stop or changing step)
-    if (event.error === 'canceled' || event.error === 'interrupted') {
+    const float32Data = base64PcmToFloat32(data.audio);
+    if (float32Data.length === 0) {
       if (options?.onEnd) options.onEnd();
       return;
     }
-    console.warn('SpeechSynthesis error:', event.error);
-    if (options?.onError) options.onError(event);
-  };
 
-  // Speak via native browser engine
-  window.speechSynthesis.speak(utterance);
+    const audioBuffer = ctx.createBuffer(1, float32Data.length, 24000);
+    audioBuffer.copyToChannel(float32Data, 0);
+
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+    currentSourceNode = source;
+
+    source.onended = () => {
+      if (currentSourceNode === source) {
+        currentSourceNode = null;
+      }
+      activeAbortController = null;
+      if (options?.onEnd) options.onEnd();
+    };
+
+    if (options?.onStart) options.onStart();
+    source.start(0);
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      return;
+    }
+    console.warn('[Gemini AI Voice] Playback note:', err?.message || err);
+    if (options?.onError) options.onError(err);
+  }
 }
