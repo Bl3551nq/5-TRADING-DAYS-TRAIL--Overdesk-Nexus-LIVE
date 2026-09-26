@@ -71,36 +71,9 @@ export class GeminiVoiceEngine {
 
     this.isRunning = true;
 
-    // 1. Initialize local Web Audio meter (optional visual feedback)
-    try {
-      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-        this.stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (AudioCtx) {
-          this.audioContext = new AudioCtx();
-          const src = this.audioContext.createMediaStreamSource(this.stream);
-          this.analyser = this.audioContext.createAnalyser();
-          this.analyser.fftSize = 128;
-          this.analyser.smoothingTimeConstant = 0.25;
-          src.connect(this.analyser);
-          this.startAudioMeterLoop();
-        }
-      }
-    } catch (micErr: any) {
-      console.warn('Microphone audio meter init note (SpeechRecognition will still attempt):', micErr);
-    }
-
-    // 2. Initialize native browser SpeechRecognition
+    // 1. Initialize native browser SpeechRecognition immediately
     try {
       this.initSpeechRecognition(SpeechRecClass);
-      return true;
     } catch (err: any) {
       this.isRunning = false;
       this.isListeningActive = false;
@@ -109,6 +82,34 @@ export class GeminiVoiceEngine {
       this.onError(errorMsg, 'INIT_ERROR');
       throw err;
     }
+
+    // 2. Optional visual audio meter in background (non-blocking, never delays speech)
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia && !this.stream) {
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            if (!this.isRunning) {
+              stream.getTracks().forEach((t) => t.stop());
+              return;
+            }
+            this.stream = stream;
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            if (AudioCtx) {
+              this.audioContext = new AudioCtx();
+              const src = this.audioContext.createMediaStreamSource(this.stream);
+              this.analyser = this.audioContext.createAnalyser();
+              this.analyser.fftSize = 128;
+              this.analyser.smoothingTimeConstant = 0.25;
+              src.connect(this.analyser);
+              this.startAudioMeterLoop();
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {}
+
+    return true;
   }
 
   /**

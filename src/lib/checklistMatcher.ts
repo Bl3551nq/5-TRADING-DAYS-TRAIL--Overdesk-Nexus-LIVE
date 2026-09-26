@@ -236,17 +236,24 @@ export function matchChecklistWithFuse(
       }
     }
 
+    const nextStepsSpoken = upcoming.map((u, i) => `${i + 1}, ${u.action}`).join('. ');
+
     return {
-      matchedAction: 'Awaiting Completed Step',
+      matchedAction: prevItem ? `Previously: ${prevItem.text}` : 'Checklist Start',
       matchedMode: pendingItem.modeTitle,
       matchedItemIndex: -1,
-      nextAction: 'Tell me what you completed first',
+      nextAction: upcoming[0]?.action || 'All checklist steps completed!',
       nextMode: pendingItem.modeTitle,
       nextItemIndex: pendingItem.itemIndex,
       upcomingActions: upcoming,
       spokenSpeech:
-        'Tell me what step you just completed on your checklist, and I will guide your next 3 actions.',
-      advice: 'Speak what you have completed (e.g. "I checked the 4-hour trend") to receive your next 3 sequential steps.',
+        upcoming.length > 0
+          ? `Your next ${upcoming.length} steps are: ${nextStepsSpoken}.`
+          : 'All items on your checklist are completed! Great discipline.',
+      advice:
+        upcoming.length > 0
+          ? `Upcoming: ${upcoming.map((u, i) => `${i + 1}) ${u.action}`).join(', ')}`
+          : 'All items completed across your 5 trading modes.',
     };
   }
 

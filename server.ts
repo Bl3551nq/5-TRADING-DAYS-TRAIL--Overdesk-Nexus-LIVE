@@ -249,20 +249,34 @@ CRITICAL INTERACTION FLOW:
 
         // 1. Audio input from client mic (16kHz PCM 16-bit little-endian)
         if (msg.audio && session) {
-          session.sendRealtimeInput({
-            audio: {
-              data: msg.audio,
-              mimeType: 'audio/pcm;rate=16000',
-            },
-          });
+          try {
+            session.sendRealtimeInput({
+              audio: {
+                data: msg.audio,
+                mimeType: 'audio/pcm;rate=16000',
+              },
+            });
+          } catch (audioErr) {
+            console.warn('[Live API] Audio forward note:', audioErr);
+          }
           return;
         }
 
         // 2. Direct text input to live conversation
         if (msg.text && session) {
-          session.sendRealtimeInput({
-            text: msg.text,
-          });
+          try {
+            session.sendClientContent({
+              turns: [
+                {
+                  role: 'user',
+                  parts: [{ text: msg.text }],
+                },
+              ],
+              turnComplete: true,
+            });
+          } catch (textErr) {
+            console.warn('[Live API] Text forward note:', textErr);
+          }
           return;
         }
 
@@ -320,30 +334,59 @@ CRITICAL INTERACTION FLOW:
       const validVoices = ['Zephyr', 'Kore', 'Fenrir', 'Puck', 'Charon'];
       const selectedVoice = validVoices.includes(voiceName) ? voiceName : 'Zephyr';
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash-lite-tts',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: text.slice(0, 1200),
-                speechMetadata: {
-                  style: style || 'Clear, confident, disciplined financial trading copilot',
+      let response: any;
+      try {
+        response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash-tts',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: text.slice(0, 1200),
+                  speechMetadata: {
+                    style: style || 'Clear, confident, disciplined financial trading copilot',
+                  },
                 },
+              ],
+            },
+          ] as any,
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: selectedVoice },
               },
-            ],
-          },
-        ] as any,
-        config: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: selectedVoice },
             },
           },
-        },
-      });
+        });
+      } catch (primaryErr) {
+        console.warn('[Gemini TTS] Primary flash-tts fallback attempt:', primaryErr);
+        response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash-lite-tts',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  text: text.slice(0, 1200),
+                  speechMetadata: {
+                    style: style || 'Clear, confident, disciplined financial trading copilot',
+                  },
+                },
+              ],
+            },
+          ] as any,
+          config: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: { voiceName: selectedVoice },
+              },
+            },
+          },
+        });
+      }
 
       const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (base64Audio) {

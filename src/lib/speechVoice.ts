@@ -106,25 +106,63 @@ export function formatTextForSpeech(text: string): string {
 }
 
 /**
- * Converts Base64 PCM 16-bit little-endian audio to Float32Array for Web Audio playback
+ * Fallback to browser Web Speech API if Gemini AI TTS is unavailable
  */
-function base64PcmToFloat32(base64: string): Float32Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+export function fallbackToWebSpeech(
+  cleanText: string,
+  options?: {
+    rate?: number;
+    pitch?: number;
+    onStart?: () => void;
+    onEnd?: () => void;
+    onError?: (err?: any) => void;
+  }
+): void {
+  if (typeof window === 'undefined' || !window.speechSynthesis) {
+    if (options?.onEnd) options.onEnd();
+    return;
   }
 
-  const int16 = new Int16Array(bytes.buffer);
-  const float32 = new Float32Array(int16.length);
-  for (let i = 0; i < int16.length; i++) {
-    float32[i] = int16[i] / 32768.0;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = options?.rate || 1.05;
+    utterance.pitch = options?.pitch || 1.0;
+
+    const voices = window.speechSynthesis.getVoices();
+    const enVoice =
+      voices.find(
+        (v) =>
+          v.lang.startsWith('en') &&
+          (v.name.includes('Natural') ||
+            v.name.includes('Google') ||
+            v.name.includes('Samantha') ||
+            v.name.includes('Daniel') ||
+            v.name.includes('Alex'))
+      ) || voices.find((v) => v.lang.startsWith('en'));
+
+    if (enVoice) utterance.voice = enVoice;
+
+    utterance.onstart = () => {
+      if (options?.onStart) options.onStart();
+    };
+    utterance.onend = () => {
+      if (options?.onEnd) options.onEnd();
+    };
+    utterance.onerror = () => {
+      if (options?.onEnd) options.onEnd();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  } catch (e) {
+    console.warn('[Web Speech] Fallback failed:', e);
+    if (options?.onEnd) options.onEnd();
   }
-  return float32;
 }
 
 /**
  * Speaks text aloud using Gemini AI Text-To-Speech (gemini-3.8-flash-lite-tts)
+ * with seamless automatic fallback to browser Web Speech API.
  */
 export async function speakNaturalUtterance(
   text: string,
@@ -143,9 +181,10 @@ export async function speakNaturalUtterance(
   unlockAudioContext();
 
   const cleanText = formatTextForSpeech(text);
-  const selectedVoice = options?.preferredVoiceUri && options.preferredVoiceUri !== 'default'
-    ? options.preferredVoiceUri
-    : 'Zephyr';
+  const selectedVoice =
+    options?.preferredVoiceUri && options.preferredVoiceUri !== 'default'
+      ? options.preferredVoiceUri
+      : 'Zephyr';
 
   const abortController = new AbortController();
   activeAbortController = abortController;
@@ -173,17 +212,38 @@ export async function speakNaturalUtterance(
 
     const ctx = getAudioContext();
     if (ctx.state === 'suspended') {
-      await ctx.resume();
+      try {
+        await ctx.resume();
+      } catch {}
     }
 
-    const float32Data = base64PcmToFloat32(data.audio);
-    if (float32Data.length === 0) {
-      if (options?.onEnd) options.onEnd();
-      return;
+    // Convert base64 to ArrayBuffer
+    const binary = atob(data.audio);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
     }
 
-    const audioBuffer = ctx.createBuffer(1, float32Data.length, 24000);
-    audioBuffer.copyToChannel(float32Data, 0);
+    let audioBuffer: AudioBuffer;
+    try {
+      // Decode audio data using native Web Audio decoder (handles WAV, MP3, etc.)
+      audioBuffer = await ctx.decodeAudioData(bytes.buffer.slice(0));
+    } catch {
+      // Manual PCM extraction fallback from WAV container (offset 44)
+      let offset = 44;
+      const dataIndex = binary.indexOf('data');
+      if (dataIndex !== -1) {
+        offset = dataIndex + 8;
+      }
+      const pcmBytes = bytes.slice(offset);
+      const int16 = new Int16Array(pcmBytes.buffer, pcmBytes.byteOffset, Math.floor(pcmBytes.byteLength / 2));
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 32768.0;
+      }
+      audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+      audioBuffer.copyToChannel(float32, 0);
+    }
 
     const source = ctx.createBufferSource();
     source.buffer = audioBuffer;
@@ -204,7 +264,7 @@ export async function speakNaturalUtterance(
     if (err?.name === 'AbortError') {
       return;
     }
-    console.warn('[Gemini AI Voice] Playback note:', err?.message || err);
-    if (options?.onError) options.onError(err);
+    console.warn('[Gemini AI Voice] Falling back to Web Speech Synthesis:', err?.message || err);
+    fallbackToWebSpeech(cleanText, options);
   }
 }
